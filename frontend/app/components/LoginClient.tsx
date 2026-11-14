@@ -29,6 +29,15 @@ function authError(payload: unknown): string {
   return detail?.message ?? "We could not sign you in. Please try again.";
 }
 
+async function authResponse(response: Response) {
+  if (!response.headers.get("content-type")?.includes("application/json")) {
+    throw new Error("The sign-in service is unavailable. Please try again later.");
+  }
+  const payload = await response.json();
+  if (!response.ok) throw new Error(authError(payload));
+  return payload;
+}
+
 export function LoginClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -55,8 +64,7 @@ export function LoginClient() {
     async function setup() {
       try {
         const response = await fetch(`${API_BASE}/api/auth/google/config`, { credentials: "include", cache: "no-store" });
-        const config = await response.json();
-        if (!response.ok) throw new Error(authError(config));
+        const config = await authResponse(response);
         if (!active || !container || !window.google) return;
         window.google.accounts.id.initialize({
           client_id: config.client_id,
@@ -71,8 +79,7 @@ export function LoginClient() {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ credential }),
               });
-              const payload = await result.json();
-              if (!result.ok) throw new Error(authError(payload));
+              await authResponse(result);
               router.replace(next);
             } catch (caught) {
               if (active) setError(caught instanceof Error ? caught.message : "Sign-in failed. Please try again.");
