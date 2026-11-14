@@ -25,6 +25,12 @@ def isolated_api_storage(tmp_path, monkeypatch):
     api_main.planner_client_override = None
 
 
+def sign_in_for_test(client, profile):
+    user = api_main.auth_store.google_user({"sub": profile["email"], "name": profile["name"], "email": profile["email"]})
+    client.cookies.set(api_main.AUTH_COOKIE_NAME, api_main.auth_store.create_session(user["id"]))
+    return client.get("/api/auth/me")
+
+
 class FakePlannerClient:
     def __init__(self, payload: dict) -> None:
         self.payload = payload
@@ -250,12 +256,18 @@ def test_all_api_routes_declare_response_models() -> None:
     assert found == expected
 
 
-def test_account_signup_login_and_logout_use_server_session_cookie() -> None:
+def test_google_signin_profile_and_logout_use_server_session_cookie(monkeypatch) -> None:
     client = TestClient(app)
-    signup = client.post(
-        "/api/auth/signup",
-        json={"name": "Anaya Homeowner", "email": "anaya@example.com", "password": "a-secure-password"},
-    )
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-client")
+    config = client.get("/api/auth/google/config", headers={"Origin": "http://localhost:3000"}).json()
+    def verify(token, transport, audience):
+        assert token == "signed-google-token"
+        assert audience == "test-client"
+        return {"sub": "google-anaya", "email": "anaya@example.com", "name": "Anaya Homeowner",
+                "email_verified": True, "nonce": config["nonce"]}
+    monkeypatch.setattr(api_main.id_token, "verify_oauth2_token", verify)
+    signup = client.post("/api/auth/google", json={"credential": "signed-google-token"},
+                         headers={"Origin": "http://localhost:3000"})
     assert signup.status_code == 200
     assert signup.json()["user"]["email"] == "anaya@example.com"
     assert api_main.AUTH_COOKIE_NAME in signup.cookies
@@ -294,11 +306,9 @@ def test_account_signup_login_and_logout_use_server_session_cookie() -> None:
         json={"name": "No Session", "location": "", "home_type": "house", "preferred_units": "m"},
     ).status_code == 401
 
-    bad_login = client.post("/api/auth/login", json={"email": "anaya@example.com", "password": "wrong-password"})
-    assert bad_login.status_code == 401
-    login = client.post("/api/auth/login", json={"email": "anaya@example.com", "password": "a-secure-password"})
-    assert login.status_code == 200
-    assert client.get("/api/auth/me").status_code == 200
+    assert client.post("/api/auth/signup", json={"name": "Anaya", "email": "anaya@example.com", "password": "a-secure-password"}).status_code == 410
+    assert client.post("/api/auth/login", json={"email": "anaya@example.com", "password": "a-secure-password"}).status_code == 410
+    assert client.post("/api/auth/google", json={"credential": "signed-google-token"}, headers={"Origin": "http://localhost:3000"}).status_code == 401
 
 
 def test_account_password_and_session_survive_store_reload(tmp_path) -> None:
@@ -326,10 +336,7 @@ def test_account_password_and_session_survive_store_reload(tmp_path) -> None:
 
 def test_furniture_alternative_is_saved_rechecked_and_owner_scoped() -> None:
     client = TestClient(app)
-    signup = client.post(
-        "/api/auth/signup",
-        json={"name": "Anaya", "email": "anaya@example.com", "password": "a-secure-password"},
-    )
+    signup = sign_in_for_test(client, {"name": "Anaya", "email": "anaya@example.com", "password": "a-secure-password"})
     user_id = signup.json()["user"]["id"]
     brief = create_room_brief(room_type="living room", width=12, depth=14, units="ft", budget_inr=180000, style_words=["modern"])
     api_main.planner_client_override = FakePlannerClient(planner_payload(brief))
@@ -352,16 +359,13 @@ def test_furniture_alternative_is_saved_rechecked_and_owner_scoped() -> None:
     assert updated["chat_messages"][-1]["role"] == "assistant"
 
     other = TestClient(app)
-    other.post("/api/auth/signup", json={"name": "Other", "email": "other@example.com", "password": "another-password"})
+    sign_in_for_test(other, {"name": "Other", "email": "other@example.com", "password": "another-password"})
     assert other.get(f"/api/design/{generated['design_id']}").status_code == 404
 
 
 def test_project_delete_removes_all_design_versions_and_chat_sessions_for_owner() -> None:
     client = TestClient(app)
-    client.post(
-        "/api/auth/signup",
-        json={"name": "Anaya", "email": "anaya@example.com", "password": "a-secure-password"},
-    )
+    sign_in_for_test(client, {"name": "Anaya", "email": "anaya@example.com", "password": "a-secure-password"})
     brief = create_room_brief(room_type="living_room", width=12, depth=14, units="ft", budget_inr=180000)
     api_main.planner_client_override = FakePlannerClient(planner_payload(brief))
     deleted_sessions: list[str] = []
@@ -397,10 +401,7 @@ def test_project_delete_removes_all_design_versions_and_chat_sessions_for_owner(
     assert client.delete("/api/projects/project-to-delete").status_code == 404
 
     other = TestClient(app)
-    other.post(
-        "/api/auth/signup",
-        json={"name": "Other", "email": "other@example.com", "password": "another-password"},
-    )
+    sign_in_for_test(other, {"name": "Other", "email": "other@example.com", "password": "another-password"})
     assert other.delete("/api/projects/project-to-keep").status_code == 404
 
 

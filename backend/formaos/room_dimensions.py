@@ -4,7 +4,7 @@ import json
 import math
 from pathlib import Path
 
-ROOM_DIMENSION_POLICY = json.loads((Path(__file__).resolve().parents[2] / 'shared' / 'room-dimensions.json').read_text(encoding='utf-8'))
+ROOM_DIMENSION_POLICY = json.loads((Path(__file__).resolve().parents[2] / 'frontend' / 'shared' / 'room-dimensions.json').read_text(encoding='utf-8'))
 UNIT_FACTORS = {'ft': 30.48, 'm': 100.0, 'cm': 1.0}
 
 

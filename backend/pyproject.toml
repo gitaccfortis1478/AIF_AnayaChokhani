@@ -9,6 +9,7 @@ dependencies = [
   "pydantic",
   "python-dotenv",
   "httpx",
+  "google-auth[requests]>=2.38,<3",
   "langgraph",
   "langchain",
   "chromadb",

@@ -27,6 +27,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from google.auth.transport.requests import Request as GoogleRequest
+from google.auth.exceptions import TransportError
+from google.oauth2 import id_token
 
 from formaos.definitions import ROOM_CATEGORIES as DEMO_ROOM_CATEGORIES
 from formaos.definitions import ROOM_DEFAULT_NEEDS, ROOM_DESIGN_GUIDANCE
@@ -75,17 +78,15 @@ if AUTH_STORE_PATH.exists():
     AUTH_STORE_PATH.chmod(0o600)
 AUTH_COOKIE_NAME = "formaos_session"
 AUTH_SESSION_DAYS = 30
+GOOGLE_NONCE_COOKIE = "formaos_google_nonce"
+FRONTEND_ORIGINS = [origin.strip().rstrip("/") for origin in os.environ.get(
+    "FRONTEND_URL", "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173"
+).split(",") if origin.strip()]
 
 app = FastAPI(title="FormaOS API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:5173",
-    ],
-    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1):\d+$",
+    allow_origins=FRONTEND_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -232,6 +233,25 @@ class FileAuthStore:
         self._flush()
         return self.public_user(user)
 
+    def google_user(self, claims: dict[str, Any]) -> dict[str, str]:
+        self._load()
+        subject = claims["sub"]
+        user = next((u for u in self._users.values() if u.get("google_sub") == subject), None)
+        if user is None:
+            # Never link legacy accounts by email: they did not verify email ownership.
+            user_id = f"homeowner-{uuid4().hex[:16]}"
+            user = {
+                "id": user_id, "google_sub": subject,
+                "email": claims["email"].strip().lower(),
+                "name": str(claims.get("name") or claims["email"]),
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+            self._users[user_id] = user
+        else:
+            user["email"] = claims["email"].strip().lower()
+        self._flush()
+        return self.public_user(user)
+
     def update_profile(
         self,
         user_id: str,
@@ -261,7 +281,7 @@ class FileAuthStore:
         self._load()
         normalized_email = email.strip().lower()
         user = next((candidate for candidate in self._users.values() if candidate.get("email") == normalized_email), None)
-        if not user:
+        if not user or "password_salt" not in user:
             return None
         candidate_hash = self._password_hash(password, str(user["password_salt"]))
         if not hmac.compare_digest(candidate_hash, str(user["password_hash"])):
@@ -1732,17 +1752,69 @@ def health() -> HealthResponse:
 
 @app.post("/api/auth/signup", response_model=AuthResponse)
 def sign_up(payload: SignUpRequest, response: Response) -> AuthResponse:
-    user = auth_store.create_user(payload.name, payload.email, payload.password)
-    set_auth_cookie(response, auth_store.create_session(user["id"]))
-    return AuthResponse(user=AuthUser(**user))
+    raise typed_error(410, "google_signin_required", "Please continue with Google.")
 
 
 @app.post("/api/auth/login", response_model=AuthResponse)
 def log_in(payload: LoginRequest, response: Response) -> AuthResponse:
-    user = auth_store.authenticate(payload.email, payload.password)
-    if user is None:
-        raise typed_error(401, "invalid_credentials", "email or password is incorrect")
+    raise typed_error(410, "google_signin_required", "Please continue with Google.")
+
+
+class GoogleSignInRequest(BaseModel):
+    credential: str = Field(min_length=1, max_length=16384)
+
+
+def require_frontend_origin(request: Request) -> None:
+    origin = request.headers.get("origin")
+    # Same-origin GET requests may omit Origin; verify browser metadata and host.
+    if (not origin and request.method == "GET"
+            and request.headers.get("sec-fetch-site") == "same-origin"
+            and str(request.base_url).rstrip("/") in FRONTEND_ORIGINS):
+        return
+    if origin not in FRONTEND_ORIGINS:
+        raise typed_error(403, "invalid_origin", "Sign in from the application website.")
+
+
+@app.get("/api/auth/google/config")
+def google_config(request: Request, response: Response) -> dict[str, str]:
+    require_frontend_origin(request)
+    client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+    if not client_id:
+        raise typed_error(503, "google_not_configured", "Google sign-in is not configured yet.")
+    nonce = secrets.token_urlsafe(32)
+    response.set_cookie(
+        GOOGLE_NONCE_COOKIE, nonce, max_age=600, httponly=True,
+        secure=os.environ.get("FORMAOS_COOKIE_SECURE") == "1",
+        samesite=os.environ.get("FORMAOS_COOKIE_SAMESITE", "lax"), path="/api/auth/google",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return {"client_id": client_id, "nonce": nonce}
+
+
+@app.post("/api/auth/google", response_model=AuthResponse)
+def google_sign_in(payload: GoogleSignInRequest, request: Request, response: Response) -> AuthResponse:
+    require_frontend_origin(request)
+    client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+    if not client_id:
+        raise typed_error(503, "google_not_configured", "Google sign-in is not configured yet.")
+    nonce = request.cookies.get(GOOGLE_NONCE_COOKIE)
+    if not nonce:
+        raise typed_error(401, "invalid_google_token", "Please reload and try Google sign-in again.")
+    try:
+        claims = id_token.verify_oauth2_token(payload.credential, GoogleRequest(), client_id)
+        if (not claims.get("sub") or not claims.get("email")
+                or claims.get("email_verified") is not True
+                or not secrets.compare_digest(str(claims.get("nonce", "")), nonce)):
+            raise ValueError("Invalid Google identity or nonce")
+    except ValueError:
+        raise typed_error(401, "invalid_google_token", "Google sign-in could not be verified. Please try again.")
+    except TransportError:
+        raise typed_error(503, "google_unavailable", "Google sign-in is temporarily unavailable.")
+    user = auth_store.google_user(claims)
+    auth_store.revoke(request.cookies.get(AUTH_COOKIE_NAME))
     set_auth_cookie(response, auth_store.create_session(user["id"]))
+    response.delete_cookie(GOOGLE_NONCE_COOKIE, path="/api/auth/google")
+    response.headers["Cache-Control"] = "no-store"
     return AuthResponse(user=AuthUser(**user))
 
 

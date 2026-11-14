@@ -1,68 +1,98 @@
 "use client";
 
-import type { FormEvent } from "react";
 import Link from "next/link";
+import Script from "next/script";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
+const API_BASE = (process.env.NEXT_PUBLIC_BACKEND_URL ?? process.env.NEXT_PUBLIC_FORMAOS_API_BASE ?? "http://localhost:8000").replace(/\/$/, "");
 
-type AuthMode = "login" | "signup";
+type GoogleIdentity = {
+  initialize: (options: { client_id: string; nonce: string; callback: (result: { credential: string }) => void }) => void;
+  renderButton: (element: HTMLElement, options: { theme: string; size: string; text: string }) => void;
+};
 
-function apiUrl(path: string) {
-  console.log(`${API_BASE}${path}`)
-  return `${API_BASE}${path}`;
+declare global {
+  interface Window { google?: { accounts: { id: GoogleIdentity } } }
 }
 
-function authError(payload: unknown) {
-  if (!payload || typeof payload !== "object" || !("detail" in payload)) return "We could not sign you in. Please try again.";
-  const detail = (payload as { detail?: { message?: string } }).detail;
+function safeNext(value: string | null) {
+  try {
+    const url = new URL(value || "/workspace", "https://app.local");
+    return url.origin === "https://app.local" && url.pathname !== "/login"
+      ? `${url.pathname}${url.search}${url.hash}` : "/workspace";
+  } catch { return "/workspace"; }
+}
+
+function authError(payload: unknown): string {
+  const detail = (payload as { detail?: { message?: string } } | null)?.detail;
   return detail?.message ?? "We could not sign you in. Please try again.";
 }
 
 export function LoginClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const next = searchParams.get("next") || "/workspace";
-  const [mode, setMode] = useState<AuthMode>("login");
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
+  const next = safeNext(searchParams.get("next"));
+  const button = useRef<HTMLDivElement>(null);
+  const [scriptReady, setScriptReady] = useState(false);
   const [loading, setLoading] = useState(false);
   const [checkingSession, setCheckingSession] = useState(true);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    fetch(apiUrl("/api/auth/me"), { credentials: "include" })
-      .then((response) => {
-        if (response.ok) router.replace(next.startsWith("/") ? next : "/workspace");
-      })
-      .finally(() => setCheckingSession(false));
+    let active = true;
+    fetch(`${API_BASE}/api/auth/me`, { credentials: "include" })
+      .then((response) => { if (active && response.ok) router.replace(next); })
+      .catch(() => { if (active) setError("Unable to reach the sign-in service. Please try again."); })
+      .finally(() => { if (active) setCheckingSession(false); });
+    return () => { active = false; };
   }, [next, router]);
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setLoading(true);
-    setError("");
-    try {
-      const response = await fetch(apiUrl(mode === "signup" ? "/api/auth/signup" : "/api/auth/login"), {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(mode === "signup" ? { name: name.trim(), email: email.trim(), password } : { email: email.trim(), password }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(authError(payload));
-      router.replace(next.startsWith("/") ? next : "/workspace");
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "We could not sign you in. Please try again.");
-    } finally {
-      setLoading(false);
+  useEffect(() => {
+    if (!scriptReady || checkingSession) return;
+    let active = true;
+    const container = button.current;
+    async function setup() {
+      try {
+        const response = await fetch(`${API_BASE}/api/auth/google/config`, { credentials: "include", cache: "no-store" });
+        const config = await response.json();
+        if (!response.ok) throw new Error(authError(config));
+        if (!active || !container || !window.google) return;
+        window.google.accounts.id.initialize({
+          client_id: config.client_id,
+          nonce: config.nonce,
+          callback: async ({ credential }) => {
+            if (!active) return;
+            setLoading(true);
+            setError("");
+            try {
+              const result = await fetch(`${API_BASE}/api/auth/google`, {
+                method: "POST", credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ credential }),
+              });
+              const payload = await result.json();
+              if (!result.ok) throw new Error(authError(payload));
+              router.replace(next);
+            } catch (caught) {
+              if (active) setError(caught instanceof Error ? caught.message : "Sign-in failed. Please try again.");
+            } finally { if (active) setLoading(false); }
+          },
+        });
+        container.replaceChildren();
+        window.google.accounts.id.renderButton(container, { theme: "outline", size: "large", text: "continue_with" });
+      } catch (caught) {
+        if (active) setError(caught instanceof Error ? caught.message : "Unable to load Google sign-in.");
+      }
     }
-  }
+    void setup();
+    return () => { active = false; container?.replaceChildren(); };
+  }, [scriptReady, checkingSession, next, router]);
 
   return (
+    <>
+      <Script src="https://accounts.google.com/gsi/client" strategy="afterInteractive"
+        onReady={() => setScriptReady(true)} onError={() => setError("Google sign-in could not load. Check your connection and reload.")} />
     <main className="auth-page">
       <Link className="auth-brand" href="/" aria-label="YourSpace home">
         <img src="/yourspace-logo.png" alt="" />
@@ -82,36 +112,17 @@ export function LoginClient() {
         </div>
 
         <div className="auth-card">
-          <div className="auth-mode-switch" aria-label="Account action">
-            <button type="button" className={mode === "login" ? "active" : ""} onClick={() => { setMode("login"); setError(""); }}>Sign in</button>
-            <button type="button" className={mode === "signup" ? "active" : ""} onClick={() => { setMode("signup"); setError(""); }}>Create account</button>
-          </div>
           <div className="auth-card-heading">
-            <h2>{mode === "login" ? "Welcome back" : "Create your homeowner account"}</h2>
-            <p>{mode === "login" ? "Continue where you left off." : "Start a private project library for your home."}</p>
+            <h2>Your home starts here</h2>
+            <p>Sign in or create your YourSpace account with Google.</p>
           </div>
-          <form onSubmit={handleSubmit}>
-            {mode === "signup" ? (
-              <label>Full name<input autoComplete="name" required minLength={2} value={name} onChange={(event) => setName(event.target.value)} placeholder="Your name" /></label>
-            ) : null}
-            <label>Email address<input autoComplete="email" type="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" /></label>
-            <label>
-              Password
-              <span className="auth-password-field">
-                <input autoComplete={mode === "login" ? "current-password" : "new-password"} type={showPassword ? "text" : "password"} required minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 8 characters" />
-                <button type="button" onClick={() => setShowPassword((visible) => !visible)} aria-label={showPassword ? "Hide password" : "Show password"} aria-pressed={showPassword}>
-                  {showPassword ? "Hide" : "Show"}
-                </button>
-              </span>
-            </label>
-            {error ? <p className="auth-error" role="alert">{error}</p> : null}
-            <button className="ys-solid-button auth-submit" type="submit" disabled={loading || checkingSession}>
-              {loading ? "Please wait..." : checkingSession ? "Checking account..." : mode === "login" ? "Sign in to YourSpace" : "Create account"}
-            </button>
-          </form>
-          <p className="auth-privacy">Your account session is stored in a secure, HttpOnly cookie. Passwords are salted and hashed before storage.</p>
+          <div ref={button} aria-label="Continue with Google" hidden={loading} />
+          {checkingSession || !scriptReady || loading ? <p role="status">{loading ? "Signing you in..." : "Loading sign-in..."}</p> : null}
+          {error ? <p className="auth-error" role="alert">{error}</p> : null}
+          <p className="auth-privacy">Google verifies your identity. YourSpace never receives your Google password. Your session stays in an HttpOnly cookie.</p>
         </div>
       </section>
     </main>
+    </>
   );
 }

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { formatCurrency } from "../data";
 
-const API_BASE = process.env.NEXT_PUBLIC_FORMAOS_API_BASE ?? "http://localhost:8000";
+const API_BASE = (process.env.NEXT_PUBLIC_BACKEND_URL ?? process.env.NEXT_PUBLIC_FORMAOS_API_BASE ?? "http://localhost:8000").replace(/\/$/, "");
 
 type ExportItem = {
   item_id: string;
