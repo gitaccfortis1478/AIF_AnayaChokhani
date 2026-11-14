@@ -43,7 +43,13 @@ yarn-error.log*
 
 # local data and generated artifacts
 /.formaos-data/
-backend/data/
+backend/data/*
+!backend/data/curated/
+backend/data/curated/*
+!backend/data/curated/abo_mvp_catalogue_with_images.csv
+!backend/data/vastu/
+backend/data/vastu/*
+!backend/data/vastu/vastu_rules_v1.json
 backend/data/raw/
 backend/data/external/
 backend/data/vectorstores/

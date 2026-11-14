@@ -5,7 +5,7 @@ import Script from "next/script";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
-const API_BASE = (process.env.NEXT_PUBLIC_BACKEND_URL ?? process.env.NEXT_PUBLIC_FORMAOS_API_BASE ?? "http://localhost:8000").replace(/\/$/, "");
+const API_BASE = (process.env.MYSPACE_PUBLIC_BACKEND_URL ?? "").replace(/\/$/, "");
 
 type GoogleIdentity = {
   initialize: (options: { client_id: string; nonce: string; callback: (result: { credential: string }) => void }) => void;

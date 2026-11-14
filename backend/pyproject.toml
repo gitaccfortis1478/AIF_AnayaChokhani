@@ -16,10 +16,9 @@ dependencies = [
   "pandas",
   "numpy",
   "scipy",
-  "langgraph",
-  "chromadb",
   "requests",
-  "pillow"
+  "pillow",
+  "rich"
 ]
 
 [project.optional-dependencies]

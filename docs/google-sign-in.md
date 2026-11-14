@@ -6,7 +6,7 @@ YourSpace uses the Google Identity Services button for both account creation and
 
 1. In Google Cloud Console, configure Google Auth Platform branding, audience and consent. While the app is in testing, add your testers.
 2. Create an OAuth client with application type **Web application**.
-3. Add `http://localhost:3000` and your deployed frontend origin (for example `https://yourspace.example.com`) to **Authorized JavaScript origins**. Include the port locally; omit URL paths. This popup ID-token flow does not need a redirect URI or client secret.
+3. Add the origin configured in `MYSPACE_PUBLIC_FRONTEND_URL` and your deployed frontend origin (for example `https://yourspace.example.com`) to **Authorized JavaScript origins**. Include the port locally; omit URL paths. This popup ID-token flow does not need a redirect URI or client secret.
 4. Set backend `GOOGLE_CLIENT_ID` to that client's ID.
 
 ## Environment
@@ -15,17 +15,17 @@ Backend (load these in the backend process environment, or `backend/.env` when s
 
 ```dotenv
 GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
-FRONTEND_URL=http://localhost:3000
+MYSPACE_PUBLIC_FRONTEND_URL=https://yourspace.example.com
 FORMAOS_COOKIE_SECURE=0
 FORMAOS_COOKIE_SAMESITE=lax
 ```
 
-`FRONTEND_URL` accepts a comma-separated list of exact allowed frontend origins. In production, use the deployed HTTPS origin and `FORMAOS_COOKIE_SECURE=1`.
+`MYSPACE_PUBLIC_FRONTEND_URL` accepts a comma-separated list of exact allowed frontend origins. In production, use the deployed HTTPS origin and `FORMAOS_COOKIE_SECURE=1`.
 
 Frontend (`frontend/.env.local` for development, or hosting build settings):
 
 ```dotenv
-NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
+MYSPACE_PUBLIC_BACKEND_URL=https://api.yourspace.example.com
 ```
 
 Use your public HTTPS backend URL for production and rebuild the frontend after changing it. The frontend obtains the Google client ID from the backend; no additional frontend Google variable is required.

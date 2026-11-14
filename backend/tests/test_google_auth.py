@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 
 from formaos.api import main as api
 
-ORIGIN = {"Origin": "http://localhost:3000"}
+ORIGIN = {"Origin": api.FRONTEND_ORIGINS[0]}
 
 
 @pytest.fixture

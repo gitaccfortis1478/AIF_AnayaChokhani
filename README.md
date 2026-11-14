@@ -74,7 +74,7 @@ FORMAOS_DEMO_PLANNER=1 uv run uvicorn formaos.api.main:app --app-dir backend --r
 Health check:
 
 ```bash
-curl http://localhost:8000/api/health
+curl "${MYSPACE_PUBLIC_BACKEND_URL}/api/health"
 ```
 
 Core API routes:

@@ -216,12 +216,12 @@ def test_cors_is_enabled_for_local_frontend() -> None:
     response = client.options(
         "/api/health",
         headers={
-            "Origin": "http://localhost:3000",
+            "Origin": api_main.FRONTEND_ORIGINS[0],
             "Access-Control-Request-Method": "GET",
         },
     )
     assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert response.headers["access-control-allow-origin"] == api_main.FRONTEND_ORIGINS[0]
 
 
 def test_all_api_routes_declare_response_models() -> None:
@@ -259,7 +259,7 @@ def test_all_api_routes_declare_response_models() -> None:
 def test_google_signin_profile_and_logout_use_server_session_cookie(monkeypatch) -> None:
     client = TestClient(app)
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-client")
-    config = client.get("/api/auth/google/config", headers={"Origin": "http://localhost:3000"}).json()
+    config = client.get("/api/auth/google/config", headers={"Origin": api_main.FRONTEND_ORIGINS[0]}).json()
     def verify(token, transport, audience):
         assert token == "signed-google-token"
         assert audience == "test-client"
@@ -267,7 +267,7 @@ def test_google_signin_profile_and_logout_use_server_session_cookie(monkeypatch)
                 "email_verified": True, "nonce": config["nonce"]}
     monkeypatch.setattr(api_main.id_token, "verify_oauth2_token", verify)
     signup = client.post("/api/auth/google", json={"credential": "signed-google-token"},
-                         headers={"Origin": "http://localhost:3000"})
+                         headers={"Origin": api_main.FRONTEND_ORIGINS[0]})
     assert signup.status_code == 200
     assert signup.json()["user"]["email"] == "anaya@example.com"
     assert api_main.AUTH_COOKIE_NAME in signup.cookies
@@ -308,7 +308,7 @@ def test_google_signin_profile_and_logout_use_server_session_cookie(monkeypatch)
 
     assert client.post("/api/auth/signup", json={"name": "Anaya", "email": "anaya@example.com", "password": "a-secure-password"}).status_code == 410
     assert client.post("/api/auth/login", json={"email": "anaya@example.com", "password": "a-secure-password"}).status_code == 410
-    assert client.post("/api/auth/google", json={"credential": "signed-google-token"}, headers={"Origin": "http://localhost:3000"}).status_code == 401
+    assert client.post("/api/auth/google", json={"credential": "signed-google-token"}, headers={"Origin": api_main.FRONTEND_ORIGINS[0]}).status_code == 401
 
 
 def test_account_password_and_session_survive_store_reload(tmp_path) -> None:
