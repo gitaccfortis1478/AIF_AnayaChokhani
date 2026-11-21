@@ -40,7 +40,12 @@ $env:PYTHONPATH = "backend"
 
 ## Frontend
 
+Set `MYSPACE_PUBLIC_BACKEND_URL` in the repository-root `.env` to the Python
+API URL. The frontend reads this value at startup or build time. Restart the
+dev server after changing it.
+
 ```bash
+cd frontend
 npm install
 npm run dev
 ```
