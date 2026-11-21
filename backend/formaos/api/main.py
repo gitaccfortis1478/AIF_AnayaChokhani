@@ -586,8 +586,8 @@ def request_user(request: Request) -> dict[str, str] | None:
 
 
 def set_auth_cookie(response: Response, token: str) -> None:
-    secure = os.environ.get("FORMAOS_COOKIE_SECURE") == "1"
-    same_site = os.environ.get("FORMAOS_COOKIE_SAMESITE", "lax")
+    secure = os.environ.get("MYSPACE_COOKIE_SECURE") == "1"
+    same_site = os.environ.get("MYSPACE_COOKIE_SAMESITE", "lax")
     response.set_cookie(
         AUTH_COOKIE_NAME,
         token,
@@ -1784,8 +1784,8 @@ def google_config(request: Request, response: Response) -> dict[str, str]:
     nonce = secrets.token_urlsafe(32)
     response.set_cookie(
         GOOGLE_NONCE_COOKIE, nonce, max_age=600, httponly=True,
-        secure=os.environ.get("FORMAOS_COOKIE_SECURE") == "1",
-        samesite=os.environ.get("FORMAOS_COOKIE_SAMESITE", "lax"), path="/api/auth/google",
+        secure=os.environ.get("MYSPACE_COOKIE_SECURE") == "1",
+        samesite=os.environ.get("MYSPACE_COOKIE_SAMESITE", "lax"), path="/api/auth/google",
     )
     response.headers["Cache-Control"] = "no-store"
     return {"client_id": client_id, "nonce": nonce}

@@ -91,13 +91,13 @@ def test_google_account_and_session_survive_reload(google_client, monkeypatch):
 
 
 def test_production_cookies_and_google_outage(google_client, monkeypatch):
-    monkeypatch.setenv("FORMAOS_COOKIE_SECURE", "1")
-    monkeypatch.setenv("FORMAOS_COOKIE_SAMESITE", "none")
+    monkeypatch.setenv("MYSPACE_COOKIE_SECURE", "1")
+    monkeypatch.setenv("MYSPACE_COOKIE_SAMESITE", "none")
     response = google_client.get("/api/auth/google/config", headers=ORIGIN)
     cookie = response.headers["set-cookie"].lower()
     assert "secure" in cookie and "httponly" in cookie and "samesite=none" in cookie
-    monkeypatch.setenv("FORMAOS_COOKIE_SECURE", "0")
-    monkeypatch.setenv("FORMAOS_COOKIE_SAMESITE", "lax")
+    monkeypatch.setenv("MYSPACE_COOKIE_SECURE", "0")
+    monkeypatch.setenv("MYSPACE_COOKIE_SAMESITE", "lax")
     claims_for(google_client, monkeypatch)
     def unavailable(*args):
         raise api.TransportError("Google unreachable")

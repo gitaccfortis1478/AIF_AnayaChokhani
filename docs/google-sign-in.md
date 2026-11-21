@@ -16,11 +16,11 @@ Backend (load these in the backend process environment, or `backend/.env` when s
 ```dotenv
 GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 NEXT_PUBLIC_MYSPACE_PUBLIC_FRONTEND_URL=https://yourspace.example.com
-FORMAOS_COOKIE_SECURE=0
-FORMAOS_COOKIE_SAMESITE=lax
+MYSPACE_COOKIE_SECURE=0
+MYSPACE_COOKIE_SAMESITE=lax
 ```
 
-`NEXT_PUBLIC_MYSPACE_PUBLIC_FRONTEND_URL` accepts a comma-separated list of exact allowed frontend origins. In production, use the deployed HTTPS origin and `FORMAOS_COOKIE_SECURE=1`.
+`NEXT_PUBLIC_MYSPACE_PUBLIC_FRONTEND_URL` accepts a comma-separated list of exact allowed frontend origins. In production, use the deployed HTTPS origin and `MYSPACE_COOKIE_SECURE=1`.
 
 Frontend (`frontend/.env.local` for development, or hosting build settings):
 
@@ -30,7 +30,7 @@ NEXT_PUBLIC_MYSPACE_PUBLIC_BACKEND_URL=https://api.yourspace.example.com
 
 Use your public HTTPS backend URL for production and rebuild the frontend after changing it. The frontend obtains the Google client ID from the backend; no additional frontend Google variable is required.
 
-Prefer serving the frontend and API on the same site (such as `app.example.com` and `api.example.com`). For different sites, the backend needs `FORMAOS_COOKIE_SAMESITE=none` and `FORMAOS_COOKIE_SECURE=1`; browser third-party cookie restrictions can still block sessions. Use a same-site API domain if that happens. Never configure `SameSite=none` without HTTPS and Secure cookies.
+Prefer serving the frontend and API on the same site (such as `app.example.com` and `api.example.com`). For different sites, the backend needs `MYSPACE_COOKIE_SAMESITE=none` and `MYSPACE_COOKIE_SECURE=1`; browser third-party cookie restrictions can still block sessions. Use a same-site API domain if that happens. Never configure `SameSite=none` without HTTPS and Secure cookies.
 
 Install dependencies with `cd backend` then `uv sync`, and start the services normally. Keep the backend account/session store on persistent storage. This change retains the existing file-based store; multiple independent backend replicas need a shared transactional store before scaling.
 
