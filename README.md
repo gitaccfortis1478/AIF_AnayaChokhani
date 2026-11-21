@@ -40,7 +40,7 @@ $env:PYTHONPATH = "backend"
 
 ## Frontend
 
-Set `MYSPACE_PUBLIC_BACKEND_URL` in the repository-root `.env` to the Python
+Set `NEXT_PUBLIC_MYSPACE_PUBLIC_BACKEND_URL` in the repository-root `.env` to the Python
 API URL. The frontend reads this value at startup or build time. Restart the
 dev server after changing it.
 
@@ -79,7 +79,7 @@ FORMAOS_DEMO_PLANNER=1 uv run uvicorn formaos.api.main:app --app-dir backend --r
 Health check:
 
 ```bash
-curl "${MYSPACE_PUBLIC_BACKEND_URL}/api/health"
+curl "${NEXT_PUBLIC_MYSPACE_PUBLIC_BACKEND_URL}/api/health"
 ```
 
 Core API routes:

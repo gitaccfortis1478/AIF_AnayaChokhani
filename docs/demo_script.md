@@ -31,7 +31,7 @@ Optional evidence capture with headless Chrome running on port 9222:
   --user-data-dir=/private/tmp/formaos-demo-chrome \
   --no-first-run \
   --disable-gpu \
-  ${MYSPACE_PUBLIC_FRONTEND_URL}/workspace
+  ${NEXT_PUBLIC_MYSPACE_PUBLIC_FRONTEND_URL}/workspace
 ```
 
 Run the acceptance evidence script:
@@ -50,7 +50,7 @@ npm run demo:acceptance
 
 ## Walkthrough
 
-1. Open `${MYSPACE_PUBLIC_FRONTEND_URL}/workspace`.
+1. Open `${NEXT_PUBLIC_MYSPACE_PUBLIC_FRONTEND_URL}/workspace`.
 2. Show the two-panel workspace: room/chat setup on the left, design workspace on the right.
 3. Submit the demo brief.
 4. Show progress states: planning, designing, grounding, checking, revising, passed/failed/error.

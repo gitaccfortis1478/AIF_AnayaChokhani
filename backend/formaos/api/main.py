@@ -80,7 +80,7 @@ AUTH_COOKIE_NAME = "formaos_session"
 AUTH_SESSION_DAYS = 30
 GOOGLE_NONCE_COOKIE = "formaos_google_nonce"
 FRONTEND_ORIGINS = [origin.strip().rstrip("/") for origin in os.environ.get(
-    "MYSPACE_PUBLIC_FRONTEND_URL", ""
+    "NEXT_PUBLIC_MYSPACE_PUBLIC_FRONTEND_URL", ""
 ).split(",") if origin.strip()]
 
 app = FastAPI(title="FormaOS API", version="0.1.0")
