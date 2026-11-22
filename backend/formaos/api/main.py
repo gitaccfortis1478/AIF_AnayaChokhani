@@ -84,6 +84,7 @@ FRONTEND_ORIGINS = [origin.strip().rstrip("/") for origin in os.environ.get(
 ).split(",") if origin.strip()]
 
 app = FastAPI(title="FormaOS API", version="0.1.0")
+print(FRONTEND_ORIGINS)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=FRONTEND_ORIGINS,

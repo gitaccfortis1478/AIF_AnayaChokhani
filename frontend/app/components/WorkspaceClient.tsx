@@ -3,7 +3,8 @@
 import type { FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { deleteProjectDraft, readProjectDrafts, writeProjectDraft } from "./projectDrafts";
 import { formatCurrency } from "../data";
 import { BeforeAfterSlider } from "./BeforeAfterSlider";
 import { MarbleWorldPanel } from "./MarbleWorldPanel";
@@ -152,9 +153,32 @@ type ProfileDraft = {
 
 type PhotoNote = {
   name: string;
-  url: string;
   dataUrl: string;
   note: string;
+};
+
+type ProjectDraft = {
+  ownerId: string;
+  id: string;
+  name: string;
+  updatedAt: string;
+  designId?: string;
+  intake: {
+    step: number;
+    photos: PhotoNote[];
+    roomType: string;
+    unit: Unit;
+    width: number;
+    depth: number;
+    height: number;
+    budget: number;
+    budgetInput: string;
+    selectedStyles: string[];
+    selectedPreferences: string[];
+    vastuEnabled: boolean;
+    mainDoor: Direction;
+    compass: Direction;
+  };
 };
 
 type StyleCard = {
@@ -614,7 +638,7 @@ function newChatMessage(role: ProjectChatMessage["role"], text: string): Project
   };
 }
 
-export function WorkspaceClient() {
+export function WorkspaceClient({ routeId }: { routeId?: string }) {
   const presetBudgetNumber = 245000;
   const router = useRouter();
   const [homeowner, setHomeowner] = useState<StoredHomeowner | null>(null);
@@ -623,11 +647,18 @@ export function WorkspaceClient() {
   const [profileError, setProfileError] = useState("");
   const [profileDraft, setProfileDraft] = useState<ProfileDraft>({ name: "", location: "", homeType: "apartment", preferredUnits: "ft" });
   const [authLoading, setAuthLoading] = useState(true);
+  const [drafts, setDrafts] = useState<ProjectDraft[]>([]);
+  const [draftError, setDraftError] = useState("");
+  const [routeError, setRouteError] = useState("");
+  const [openingDraft, setOpeningDraft] = useState(false);
+  const draftAction = useRef(false);
+  const mounted = useRef(false);
+  const productMain = useRef<HTMLDivElement>(null);
   const [step, setStep] = useState(0);
   const [activeTab, setActiveTab] = useState<Tab>("shopping");
   const [progress, setProgress] = useState<ProgressState>("planning");
   const [sessionId, setSessionId] = useState("");
-  const [currentProjectId, setCurrentProjectId] = useState(() => newProjectId());
+  const [currentProjectId, setCurrentProjectId] = useState(() => routeId ?? newProjectId());
   const [design, setDesign] = useState<BackendDesign | null>(null);
   const [conceptImage, setConceptImage] = useState<ConceptImage | null>(null);
   const [selectedRevisionId, setSelectedRevisionId] = useState("");
@@ -734,10 +765,34 @@ export function WorkspaceClient() {
         latestByProject.set(savedDesign.project_id, savedDesign);
       }
     }
-    return Array.from(latestByProject.values()).sort(
-      (left, right) => new Date(right.generated_at).getTime() - new Date(left.generated_at).getTime(),
-    );
-  }, [savedDesigns]);
+    const cards = Array.from(latestByProject.values(), (saved) => ({
+      projectId: saved.project_id,
+      routeId: drafts.some((draft) => draft.id === saved.project_id) ? saved.project_id : saved.design_id,
+      name: saved.project_name,
+      date: saved.generated_at,
+      preview: safePreviewPath(saved),
+      detail: `${saved.item_count} items · ${new Date(saved.generated_at).toLocaleDateString()}`,
+      hasSavedDesign: true,
+    }));
+    for (const draft of drafts) {
+      if (latestByProject.has(draft.id)) continue;
+      cards.push({
+        projectId: draft.id, routeId: draft.id, name: draft.name, date: draft.updatedAt,
+        preview: draft.intake.photos[0]?.dataUrl ?? "/product-placeholder.svg",
+        detail: draft.designId ? "Saved design" : `Draft · ${wizardSteps[draft.intake.step]}`,
+        hasSavedDesign: Boolean(draft.designId),
+      });
+    }
+    return cards.sort((left, right) => Date.parse(right.date) - Date.parse(left.date));
+  }, [savedDesigns, drafts]);
+  const activeDraftId = drafts.find((draft) => draft.id === routeId)?.id;
+  const intake = useMemo<ProjectDraft["intake"]>(() => ({
+    step, photos, roomType, unit, width, depth, height, budget, budgetInput,
+    selectedStyles, selectedPreferences, vastuEnabled, mainDoor, compass,
+  }), [step, photos, roomType, unit, width, depth, height, budget, budgetInput,
+    selectedStyles, selectedPreferences, vastuEnabled, mainDoor, compass]);
+  const latestIntake = useRef(intake);
+  useEffect(() => { latestIntake.current = intake; }, [intake]);
   const activeProjectMessages = projectChats[currentProjectId] ?? [];
 
   const roomBrief = {
@@ -756,19 +811,47 @@ export function WorkspaceClient() {
 
   useEffect(() => {
     let active = true;
+    mounted.current = true;
+    const next = routeId ? `/design/${encodeURIComponent(routeId)}` : "/workspace";
     apiFetch("/api/auth/me")
       .then(async (response) => {
+        if (!active) return;
         if (!response.ok) {
-          router.replace("/login?next=/workspace");
+          router.replace(`/login?next=${encodeURIComponent(next)}`);
           return;
         }
         const payload = await response.json();
         if (!active) return;
         setHomeowner(payload.user);
-        if (units.includes(payload.user.preferred_units)) setUnit(payload.user.preferred_units);
-        await refreshSavedDesigns(payload.user).catch((caught) => {
-          if (active) setError(caught instanceof Error ? caught.message : "Could not load saved projects.");
-        });
+        const preferredUnit = payload.user.preferred_units;
+        if (units.includes(preferredUnit)) {
+          setUnit(preferredUnit);
+          setWidth(convertRoomUnit(14, "ft", preferredUnit));
+          setDepth(convertRoomUnit(18, "ft", preferredUnit));
+          setHeight(convertRoomUnit(10, "ft", preferredUnit));
+        }
+        const [localDrafts, remoteDesigns] = await Promise.all([
+          readProjectDrafts<ProjectDraft>(payload.user.id).catch(() => {
+            if (active) setDraftError("Could not read projects saved in this browser.");
+            return [];
+          }),
+          refreshSavedDesigns(payload.user).catch((caught) => {
+            if (active) setError(caught instanceof Error ? caught.message : "Could not load saved projects.");
+            return [] as DesignSummary[];
+          }),
+        ]);
+        if (!active) return;
+        setDrafts(localDrafts);
+        if (!routeId) return;
+        const draft = localDrafts.find((entry) => entry.id === routeId);
+        const saved = remoteDesigns.filter((entry) => entry.project_id === routeId)
+          .sort((left, right) => Date.parse(right.generated_at) - Date.parse(left.generated_at))[0];
+        const savedId = saved?.design_id ?? draft?.designId;
+        if (draft) restoreIntake(draft.intake);
+        if (savedId || !draft) {
+          const problem = await loadDesign(savedId ?? routeId);
+          if (active && problem) setRouteError(problem);
+        }
       })
       .catch(() => {
         if (active) setError("We could not connect to your account. Check that the backend is running.");
@@ -776,12 +859,28 @@ export function WorkspaceClient() {
       .finally(() => {
         if (active) setAuthLoading(false);
       });
-    return () => { active = false; };
-  }, []);
+    return () => { active = false; mounted.current = false; };
+  }, [routeId, router]);
 
   useEffect(() => {
-    setBudgetInput(String(budget));
-  }, [budget]);
+    if (authLoading || routeError || !activeDraftId || !homeowner) return;
+    const draft = {
+      ownerId: homeowner.id, id: activeDraftId, name: design?.project_name ?? projectName,
+      updatedAt: new Date().toISOString(), designId: design?.design_id, intake,
+    };
+    void writeProjectDraft(draft)
+      .then(() => {
+        if (mounted.current) {
+          setDraftError("");
+          setDrafts((current) => current.map((entry) => entry.id === draft.id ? draft : entry));
+        }
+      })
+      .catch(() => { if (mounted.current) setDraftError("Changes could not be saved in this browser."); });
+  }, [authLoading, routeError, activeDraftId, homeowner, design?.design_id, design?.project_name, projectName, intake]);
+
+  useEffect(() => {
+    if (!authLoading && !routeId && window.location.hash === "#new-project") highlightWorkspace();
+  }, [authLoading, routeId]);
 
   function updateBudgetFromSlider(value: number) {
     setBudget(value);
@@ -825,11 +924,13 @@ export function WorkspaceClient() {
   async function refreshSavedDesigns(user = homeowner) {
     if (!user) {
       setSavedDesigns([]);
-      return;
+      return [] as DesignSummary[];
     }
     const response = await apiFetch(`/api/designs?user_id=${encodeURIComponent(user.id)}`);
     const payload = await parseResponse(response);
-    setSavedDesigns(payload.designs ?? []);
+    const designs: DesignSummary[] = payload.designs ?? [];
+    setSavedDesigns(designs);
+    return designs;
   }
 
   function toggleOption(value: string, selected: string[], setter: (values: string[]) => void, limit?: number) {
@@ -851,14 +952,54 @@ export function WorkspaceClient() {
   }
 
   async function handlePhotos(files: FileList | null) {
-    if (!files) return;
-    const selected = await Promise.all(Array.from(files).slice(0, 4).map(async (file) => ({
-      name: file.name,
-      url: URL.createObjectURL(file),
-      dataUrl: await fileToDataUrl(file),
-      note: "Uploaded room photo to preserve architecture, light, and existing layout.",
-    })));
-    setPhotos((current) => [...current, ...selected].slice(0, 4));
+    const additions = Array.from(files ?? []).slice(0, 4 - photos.length);
+    if (!additions.length || draftAction.current) return;
+    draftAction.current = true;
+    setOpeningDraft(true);
+    try {
+      const selected = await Promise.all(additions.map(async (file) => ({
+        name: file.name,
+        dataUrl: await fileToDataUrl(file),
+        note: "Uploaded room photo to preserve architecture, light, and existing layout.",
+      })));
+      if (!mounted.current) return;
+      const current = latestIntake.current;
+      const nextPhotos = [...current.photos, ...selected];
+      if (routeId) setPhotos(nextPhotos);
+      else await openNewDraft({ ...current, photos: nextPhotos });
+    } catch {
+      if (mounted.current) setDraftError("Could not open a project with these photos. Please try again.");
+    } finally {
+      draftAction.current = false;
+      if (mounted.current) setOpeningDraft(false);
+    }
+  }
+
+  async function openNewDraft(nextIntake: ProjectDraft["intake"]) {
+    if (!homeowner) return;
+    const draft: ProjectDraft = {
+      ownerId: homeowner.id, id: currentProjectId, name: projectName,
+      updatedAt: new Date().toISOString(), intake: nextIntake,
+    };
+    await writeProjectDraft(draft);
+    if (mounted.current) router.push(`/design/${encodeURIComponent(draft.id)}`);
+  }
+
+  function restoreIntake(saved: ProjectDraft["intake"]) {
+    setStep(saved.step);
+    setPhotos(saved.photos);
+    setRoomType(saved.roomType);
+    setUnit(saved.unit);
+    setWidth(saved.width);
+    setDepth(saved.depth);
+    setHeight(saved.height);
+    setBudget(saved.budget);
+    setBudgetInput(saved.budgetInput);
+    setSelectedStyles(saved.selectedStyles);
+    setSelectedPreferences(saved.selectedPreferences);
+    setVastuEnabled(saved.vastuEnabled);
+    setMainDoor(saved.mainDoor);
+    setCompass(saved.compass);
   }
 
   async function loadDesign(designId: string) {
@@ -866,7 +1007,7 @@ export function WorkspaceClient() {
     setError("");
     setWarning("");
     try {
-      const response = await apiFetch(`/api/design/${designId}`);
+      const response = await apiFetch(`/api/design/${encodeURIComponent(designId)}`);
       const payload = await parseResponse(response);
       setDesign(payload.design);
       setSessionId(payload.design.session_id);
@@ -879,6 +1020,7 @@ export function WorkspaceClient() {
       setUnit(payload.design.room_brief.units);
       setHeight(payload.design.room_brief.height ?? convertRoomUnit(10, "ft", payload.design.room_brief.units));
       setBudget(payload.design.room_brief.budget_inr);
+      setBudgetInput(String(payload.design.room_brief.budget_inr));
       setSelectedStyles(payload.design.room_brief.style_words.length ? payload.design.room_brief.style_words : ["Modern"]);
       setSelectedPreferences(payload.design.room_brief.constraints.length ? payload.design.room_brief.constraints : ["More storage"]);
       setVastuEnabled(payload.design.room_brief.vastu_enabled);
@@ -892,7 +1034,7 @@ export function WorkspaceClient() {
       setStep(5);
     } catch (caught) {
       setProgress("error");
-      setError(caught instanceof Error ? caught.message : "general error");
+      return caught instanceof Error ? caught.message : "Could not open this design.";
     } finally {
       setLoading(false);
     }
@@ -1068,30 +1210,62 @@ export function WorkspaceClient() {
   }
 
   function startNewProject() {
+    if (routeId) {
+      router.push("/workspace#new-project");
+      return;
+    }
+    const preferredUnit = homeowner?.preferred_units && units.includes(homeowner.preferred_units)
+      ? homeowner.preferred_units : "ft";
     setCurrentProjectId(newProjectId());
     setSessionId("");
     setDesign(null);
     setConceptImage(null);
     setSelectedRevisionId("");
     setConceptLoading(false);
-    setPhotos([]);
-    setUnit(homeowner?.preferred_units && units.includes(homeowner.preferred_units) ? homeowner.preferred_units : "ft");
+    restoreIntake({
+      step: 0, photos: [], roomType: "living_room", unit: preferredUnit,
+      width: convertRoomUnit(14, "ft", preferredUnit),
+      depth: convertRoomUnit(18, "ft", preferredUnit),
+      height: convertRoomUnit(10, "ft", preferredUnit),
+      budget: presetBudgetNumber, budgetInput: String(presetBudgetNumber),
+      selectedStyles: ["Modern"], selectedPreferences: ["More storage", "Natural light", "Greenery"],
+      vastuEnabled: false, mainDoor: "N", compass: "N",
+    });
     setActiveTab("shopping");
     setProgress("planning");
     setError("");
     setWarning("");
     setChatInput("Make this calmer and keep the same budget.");
-    setStep(0);
+    setDraftError("");
+    highlightWorkspace();
   }
 
-  async function deleteProject(projectId: string, projectName: string) {
+  function highlightWorkspace() {
+    const region = productMain.current;
+    if (!region) return;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    region.scrollIntoView({ behavior: reducedMotion ? "instant" : "smooth", block: "nearest" });
+    region.focus({ preventScroll: true });
+    region.animate(
+      [{ outline: "3px solid #4c8465" }, { outline: "3px solid transparent" }],
+      { duration: reducedMotion ? 250 : 1000 },
+    );
+  }
+
+  async function deleteProject(projectId: string, projectName: string, hasSavedDesign: boolean) {
     if (!window.confirm(`Delete ${projectName} and its complete chat and design history? This cannot be undone.`)) return;
     setDeletingProjectId(projectId);
     setError("");
     setWarning("");
     try {
-      const response = await apiFetch(`/api/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" });
-      await parseResponse(response);
+      if (hasSavedDesign) {
+        const response = await apiFetch(`/api/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" });
+        await parseResponse(response);
+      }
+      if (homeowner && drafts.some((draft) => draft.id === projectId)) {
+        await deleteProjectDraft(homeowner.id, projectId);
+        setDrafts((current) => current.filter((draft) => draft.id !== projectId));
+      }
       setSavedDesigns((current) => current.filter((savedDesign) => savedDesign.project_id !== projectId));
       setProjectChats((current) => {
         const next = { ...current };
@@ -1363,11 +1537,25 @@ export function WorkspaceClient() {
     }
   }
 
-  function nextStep(event?: FormEvent<HTMLFormElement>) {
+  async function nextStep(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
+    if (draftAction.current || step >= wizardSteps.length - 1) return;
     if (step === 4) commitBudgetInput();
     if (dimensionError) { setError(dimensionError); return; }
-    if (step < wizardSteps.length - 1) setStep(step + 1);
+    if (routeId) {
+      setStep(step + 1);
+      return;
+    }
+    draftAction.current = true;
+    setOpeningDraft(true);
+    try {
+      await openNewDraft({ ...intake, step: step + 1 });
+    } catch {
+      if (mounted.current) setDraftError("Could not save this project in your browser. Please try again.");
+    } finally {
+      draftAction.current = false;
+      if (mounted.current) setOpeningDraft(false);
+    }
   }
 
   function previousStep() {
@@ -1388,7 +1576,7 @@ export function WorkspaceClient() {
       <section className="ys-app-shell workspace-login-required">
         <h1>Sign in to open your projects</h1>
         <p>Your saved rooms and recommendations are available only inside your account.</p>
-        <Link className="ys-solid-button" href="/login?next=/workspace">Go to sign in</Link>
+        <Link className="ys-solid-button" href={`/login?next=${encodeURIComponent(routeId ? `/design/${routeId}` : "/workspace")}`}>Go to sign in</Link>
       </section>
     );
   }
@@ -1411,31 +1599,43 @@ export function WorkspaceClient() {
 
       <div className="ys-product-layout">
         <aside className="ys-project-rail" aria-label="Your projects">
-          <button className="ys-new-project" type="button" onClick={startNewProject}>+ New project</button>
+          <button className="ys-new-project" type="button" onClick={startNewProject} disabled={openingDraft}>+ New project</button>
           <div className="ys-project-rail-heading"><strong>Projects</strong><span>{projectCards.length}</span></div>
           <div className="ys-project-rail-list">
             {projectCards.length ? projectCards.map((savedProject) => (
-              <div key={savedProject.project_id} className={`ys-project-row ${savedProject.project_id === currentProjectId ? "active" : ""}`}>
-                <button className="ys-project-open" type="button" onClick={() => loadDesign(savedProject.design_id)}>
-                  <img src={safePreviewPath(savedProject)} alt="" onError={(event) => { event.currentTarget.src = "/product-placeholder.svg"; }} />
-                  <span><strong>{savedProject.project_name}</strong><small>{savedProject.item_count} items · {new Date(savedProject.generated_at).toLocaleDateString()}</small></span>
-                </button>
+              <div key={savedProject.projectId} className={`ys-project-row ${savedProject.projectId === currentProjectId ? "active" : ""}`}>
+                <Link
+                  className="ys-project-open"
+                  href={`/design/${encodeURIComponent(savedProject.routeId)}`}
+                  aria-current={savedProject.routeId === routeId ? "page" : undefined}
+                >
+                  <img src={savedProject.preview} alt="" onError={(event) => { event.currentTarget.src = "/product-placeholder.svg"; }} />
+                  <span><strong>{savedProject.name}</strong><small>{savedProject.detail}</small></span>
+                </Link>
                 <button
                   className="ys-project-delete"
                   type="button"
-                  onClick={() => deleteProject(savedProject.project_id, savedProject.project_name)}
-                  disabled={deletingProjectId === savedProject.project_id}
-                  aria-label={`Delete ${savedProject.project_name} chat and project`}
+                  onClick={() => deleteProject(savedProject.projectId, savedProject.name, savedProject.hasSavedDesign)}
+                  disabled={deletingProjectId === savedProject.projectId}
+                  aria-label={`Delete ${savedProject.name} chat and project`}
                   title="Delete chat"
                 >
-                  {deletingProjectId === savedProject.project_id ? "..." : "Delete"}
+                  {deletingProjectId === savedProject.projectId ? "..." : "Delete"}
                 </button>
               </div>
             )) : <p>No saved projects yet. Start with your first room.</p>}
           </div>
         </aside>
 
-        <div className="ys-product-main">
+        <div className="ys-product-main" ref={productMain} tabIndex={-1}>
+      {draftError ? <p className="workspace-error" role="alert">{draftError}</p> : null}
+      {routeError ? (
+        <section className="ys-wizard-card">
+          <h1>Could not open this project</h1>
+          <p role="alert">{routeError}</p>
+          <Link href="/workspace">Back to workspace</Link>
+        </section>
+      ) : <>
       <div className="ys-stepper" aria-label="Design intake progress">
         {wizardSteps.map((label, index) => (
           <button key={label} type="button" disabled={index > step} className={index === step ? "active" : index < step ? "done" : ""} onClick={() => { if (index <= step) setStep(index); }}>
@@ -1463,13 +1663,16 @@ export function WorkspaceClient() {
                 <h1>Let's get to know your space</h1>
                 <p>Upload photos and add room dimensions.</p>
                 <label className="ys-upload">
-                  <input type="file" accept="image/*" multiple onChange={(event) => handlePhotos(event.target.files)} />
+                  <input type="file" accept="image/*" multiple disabled={openingDraft} onChange={(event) => {
+                    void handlePhotos(event.target.files);
+                    event.target.value = "";
+                  }} />
                   <span>Upload photos</span>
                   <small>Drag and drop or click to browse</small>
                 </label>
                 <div className="ys-photo-strip">
                   {photos.length ? photos.map((photo, index) => (
-                    <img key={`${photo.name}-${index}`} src={photo.url} alt={`Uploaded room photo ${index + 1}`} />
+                    <img key={`${photo.name}-${index}`} src={photo.dataUrl} alt={`Uploaded room photo ${index + 1}`} />
                   )) : (
                     <div className="ys-photo-empty">Upload photos of your actual room before generating.</div>
                   )}
@@ -1647,7 +1850,7 @@ export function WorkspaceClient() {
 
           <div className="ys-wizard-actions">
             {step > 0 ? <button className="secondary-button" type="button" onClick={previousStep}>Back</button> : <span />}
-            <button className="primary-button" type="submit" disabled={Boolean(dimensionError)}>Next</button>
+            <button className="primary-button" type="submit" disabled={openingDraft || Boolean(dimensionError)}>Next</button>
           </div>
         </form>
       ) : (
@@ -1992,6 +2195,7 @@ export function WorkspaceClient() {
           </div>
         </section>
       )}
+      </>}
         </div>
       </div>
       {profileOpen ? (

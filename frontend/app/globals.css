@@ -3550,6 +3550,7 @@ body {
   background: transparent;
   color: #26322a;
   text-align: left;
+  text-decoration: none;
   cursor: pointer;
 }
 
