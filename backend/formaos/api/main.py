@@ -34,6 +34,7 @@ from google.oauth2 import id_token
 from formaos.definitions import ROOM_CATEGORIES as DEMO_ROOM_CATEGORIES
 from formaos.definitions import ROOM_DEFAULT_NEEDS, ROOM_DESIGN_GUIDANCE
 from formaos.api.marble import create_marble_router
+from formaos.api.supabase_accounts import SupabaseAuthStore
 from formaos.agents.graph_loop import AgentLoopResult, run_agent_loop
 from formaos.agents.critic import critique_design
 from formaos.agents.grounder import ground_design
@@ -253,6 +254,11 @@ class FileAuthStore:
         self._flush()
         return self.public_user(user)
 
+    def previous_google_profile(self, subject: str) -> dict[str, str] | None:
+        self._load()
+        user = next((entry for entry in self._users.values() if entry.get("google_sub") == subject), None)
+        return self.public_user(user) if user else None
+
     def update_profile(
         self,
         user_id: str,
@@ -342,7 +348,16 @@ class FileAuthStore:
         }
 
 
-auth_store = FileAuthStore(AUTH_STORE_PATH)
+file_auth_store = FileAuthStore(AUTH_STORE_PATH)
+supabase_url = os.environ.get("SUPABASE_URL", "").strip()
+supabase_secret = os.environ.get("SUPABASE_SECRET_KEY", "").strip()
+if bool(supabase_url) != bool(supabase_secret):
+    raise RuntimeError("Set both SUPABASE_URL and SUPABASE_SECRET_KEY to enable Supabase account storage.")
+
+auth_store: FileAuthStore | SupabaseAuthStore = (
+    SupabaseAuthStore(supabase_url, supabase_secret, AUTH_SESSION_DAYS, file_auth_store.previous_google_profile)
+    if supabase_url else file_auth_store
+)
 
 
 STYLE_PROFILES: dict[str, str] = {

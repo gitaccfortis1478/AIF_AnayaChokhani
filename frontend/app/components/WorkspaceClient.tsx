@@ -1064,7 +1064,7 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
     ].join(" ");
     updateProjectChat(projectId, () => [
       newChatMessage("user", firstMessage),
-      newChatMessage("assistant", "I am checking dimensions, budget, style, catalogue items, and room constraints for this project."),
+      newChatMessage("assistant", "Checking dimensions, budget, style, catalogue items, and room constraints for this project..."),
     ]);
     try {
       const sessionResponse = await apiFetch("/api/session", {
@@ -1338,7 +1338,7 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
     // ].join(" ");
     // updateProjectChat(projectId, () => [
     //   newChatMessage("user", firstMessage),
-    //   newChatMessage("assistant", "I am checking dimensions, budget, style, catalogue items, and room constraints for this project."),
+    //   newChatMessage("assistant", "Checking dimensions, budget, style, catalogue items, and room constraints for this project..."),
     // ]);
     // try {
     //   const sessionResponse = await apiFetch("/api/session", {

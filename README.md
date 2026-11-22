@@ -65,6 +65,25 @@ use `npm run dev` for local app development.
 
 ## Backend
 
+### Google accounts on Supabase
+
+Apply [the account migration](supabase/migrations/20261122000000_google_accounts.sql)
+in the Supabase SQL Editor. In the Render backend environment, set
+`SUPABASE_URL` to the project URL and `SUPABASE_SECRET_KEY` to a Supabase
+secret key. Keep the secret key in the backend environment. Redeploy the
+backend with its existing Google and cookie settings.
+
+The backend verifies Google credentials and stores account profiles and
+sessions in Supabase. On first sign-in it creates a random user ID. Repeat
+sign-ins use the verified Google account ID and restore the saved profile.
+If the existing account file is available, Google accounts keep their IDs and
+profiles when they next sign in. Preserve that file when deploying, and expect
+existing sessions to require a fresh sign-in. Local development can leave both
+Supabase variables empty to use the file-backed account store.
+
+This migration covers accounts and sessions. Project and draft storage use
+their existing storage paths.
+
 ```bash
 uv sync
 uv run uvicorn formaos.api.main:app --app-dir backend --reload
