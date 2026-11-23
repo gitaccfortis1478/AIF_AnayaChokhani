@@ -656,7 +656,7 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
   const [authLoading, setAuthLoading] = useState(true);
   const [drafts, setDrafts] = useState<ProjectDraft[]>([]);
   const [storedProjects, setStoredProjects] = useState<StoredProject[]>([]);
-  const [projectStorageEnabled, setProjectStorageEnabled] = useState(false);
+  const [projectStorageEnabled, setProjectStorageEnabled] = useState<boolean | null>(null);
   const draftWrites = useRef<Promise<void>>(Promise.resolve());
   const [draftError, setDraftError] = useState("");
   const [routeError, setRouteError] = useState("");
@@ -859,8 +859,8 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
           }),
           apiFetch("/api/projects").then(parseResponse).catch(() => {
             if (active) setDraftError("Could not load projects from the database.");
-            return { storage_enabled: false, projects: [] };
-          }) as Promise<{ storage_enabled: boolean; projects: StoredProject[] }>,
+            return { storage_enabled: null, projects: [] };
+          }) as Promise<{ storage_enabled: boolean | null; projects: StoredProject[] }>,
         ]);
         if (!active) return;
         setProjectStorageEnabled(projectList.storage_enabled);
@@ -871,7 +871,7 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
           if (typeof saved.step !== "number") continue;
           const local = browserDrafts.get(project.project_id);
           if (local && Date.parse(local.updatedAt) > Date.parse(project.updated_at)) continue;
-          const photos = local?.intake.photos.filter((photo) => saved.photos?.some((entry) => entry.name === photo.name)) ?? [];
+          const photos = local?.intake.photos ?? [];
           browserDrafts.set(project.project_id, {
             ownerId: payload.user.id, id: project.project_id, name: project.project_name,
             updatedAt: project.updated_at, designId: local?.designId,
@@ -909,16 +909,22 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
     };
     const localSave = writeProjectDraft(draft);
     const remoteSave = draftWrites.current.then(() => syncDraft(draft));
-    const save = Promise.all([localSave, remoteSave]).then(() => undefined);
-    draftWrites.current = Promise.allSettled([localSave, remoteSave]).then(() => undefined);
-    void save
-      .then(() => {
-        if (mounted.current) {
-          setDraftError("");
-          setDrafts((current) => [...current.filter((entry) => entry.id !== draft.id), draft]);
-        }
-      })
-      .catch(() => { if (mounted.current) setDraftError("Changes could not be synced. Check your connection and try again."); });
+    const save = Promise.allSettled([localSave, remoteSave]);
+    draftWrites.current = save.then(() => undefined);
+    void save.then(([localResult, remoteResult]) => {
+      if (!mounted.current) return;
+      if (localResult.status === "rejected") {
+        setDraftError("This browser could not save your draft locally. Photos may be lost when you leave this page.");
+        return;
+      }
+      setDrafts((current) => [...current.filter((entry) => entry.id !== draft.id), draft]);
+      if (remoteResult.status === "rejected") {
+        const message = remoteResult.reason instanceof ApiRequestError ? ` ${remoteResult.reason.message}` : "";
+        setDraftError(`Your draft and photos are saved in this browser. Online sync failed.${message}`);
+      } else {
+        setDraftError("");
+      }
+    });
   }, [authLoading, routeError, activeDraftId, homeowner, design?.design_id, design?.project_name,
     projectName, intake, projectStorageEnabled, deletingProjectId]);
 
@@ -1000,19 +1006,22 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
     if (!additions.length || draftAction.current) return;
     draftAction.current = true;
     setOpeningDraft(true);
+    setDraftError("");
     try {
       const selected = await Promise.all(additions.map(async (file) => ({
         name: file.name,
         dataUrl: await fileToDataUrl(file),
         note: "Uploaded room photo to preserve architecture, light, and existing layout.",
-      })));
+      }))).catch(() => {
+        throw new Error("Could not read the selected photos. Try choosing the files again.");
+      });
       if (!mounted.current) return;
       const current = latestIntake.current;
       const nextPhotos = [...current.photos, ...selected];
       if (routeId) setPhotos(nextPhotos);
       else await openNewDraft({ ...current, photos: nextPhotos });
-    } catch {
-      if (mounted.current) setDraftError("Could not open a project with these photos. Please try again.");
+    } catch (caught) {
+      if (mounted.current) setDraftError(caught instanceof Error ? caught.message : "Could not save the selected photos.");
     } finally {
       draftAction.current = false;
       if (mounted.current) setOpeningDraft(false);
@@ -1025,13 +1034,17 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
       ownerId: homeowner.id, id: currentProjectId, name: projectName,
       updatedAt: new Date().toISOString(), intake: nextIntake,
     };
-    await writeProjectDraft(draft);
-    await syncDraft(draft);
+    try {
+      await writeProjectDraft(draft);
+    } catch {
+      throw new Error("This browser could not save the project. Check available browser storage and try again.");
+    }
+    // The project page restores the local draft and syncs it after opening.
     if (mounted.current) router.push(`/project/${encodeURIComponent(draft.id)}`);
   }
 
   async function syncDraft(draft: ProjectDraft) {
-    if (!projectStorageEnabled) return;
+    if (projectStorageEnabled === false) return;
     const response = await apiFetch(`/api/projects/${encodeURIComponent(draft.id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
