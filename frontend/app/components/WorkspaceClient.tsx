@@ -181,6 +181,13 @@ type ProjectDraft = {
   };
 };
 
+type StoredProject = {
+  project_id: string;
+  project_name: string;
+  updated_at: string;
+  draft_progress: Partial<ProjectDraft["intake"]>;
+};
+
 type StyleCard = {
   label: string;
   imageSrc: string;
@@ -648,6 +655,9 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
   const [profileDraft, setProfileDraft] = useState<ProfileDraft>({ name: "", location: "", homeType: "apartment", preferredUnits: "ft" });
   const [authLoading, setAuthLoading] = useState(true);
   const [drafts, setDrafts] = useState<ProjectDraft[]>([]);
+  const [storedProjects, setStoredProjects] = useState<StoredProject[]>([]);
+  const [projectStorageEnabled, setProjectStorageEnabled] = useState(false);
+  const draftWrites = useRef<Promise<void>>(Promise.resolve());
   const [draftError, setDraftError] = useState("");
   const [routeError, setRouteError] = useState("");
   const [openingDraft, setOpeningDraft] = useState(false);
@@ -767,7 +777,7 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
     }
     const cards = Array.from(latestByProject.values(), (saved) => ({
       projectId: saved.project_id,
-      routeId: drafts.some((draft) => draft.id === saved.project_id) ? saved.project_id : saved.design_id,
+      routeId: saved.project_id,
       name: saved.project_name,
       date: saved.generated_at,
       preview: safePreviewPath(saved),
@@ -780,12 +790,20 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
         projectId: draft.id, routeId: draft.id, name: draft.name, date: draft.updatedAt,
         preview: draft.intake.photos[0]?.dataUrl ?? "/product-placeholder.svg",
         detail: draft.designId ? "Saved design" : `Draft · ${wizardSteps[draft.intake.step]}`,
-        hasSavedDesign: Boolean(draft.designId),
+        hasSavedDesign: Boolean(draft.designId) || storedProjects.some((project) => project.project_id === draft.id),
+      });
+    }
+    for (const project of storedProjects) {
+      if (cards.some((card) => card.projectId === project.project_id)) continue;
+      cards.push({
+        projectId: project.project_id, routeId: project.project_id, name: project.project_name,
+        date: project.updated_at, preview: "/product-placeholder.svg", detail: "Draft", hasSavedDesign: true,
       });
     }
     return cards.sort((left, right) => Date.parse(right.date) - Date.parse(left.date));
-  }, [savedDesigns, drafts]);
-  const activeDraftId = drafts.find((draft) => draft.id === routeId)?.id;
+  }, [savedDesigns, drafts, storedProjects]);
+  const activeDraftId = drafts.some((draft) => draft.id === routeId)
+    || storedProjects.some((project) => project.project_id === routeId) ? routeId : undefined;
   const intake = useMemo<ProjectDraft["intake"]>(() => ({
     step, photos, roomType, unit, width, depth, height, budget, budgetInput,
     selectedStyles, selectedPreferences, vastuEnabled, mainDoor, compass,
@@ -812,7 +830,7 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
   useEffect(() => {
     let active = true;
     mounted.current = true;
-    const next = routeId ? `/design/${encodeURIComponent(routeId)}` : "/workspace";
+    const next = routeId ? `/project/${encodeURIComponent(routeId)}` : "/workspace";
     apiFetch("/api/auth/me")
       .then(async (response) => {
         if (!active) return;
@@ -830,7 +848,7 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
           setDepth(convertRoomUnit(18, "ft", preferredUnit));
           setHeight(convertRoomUnit(10, "ft", preferredUnit));
         }
-        const [localDrafts, remoteDesigns] = await Promise.all([
+        const [localDrafts, remoteDesigns, projectList] = await Promise.all([
           readProjectDrafts<ProjectDraft>(payload.user.id).catch(() => {
             if (active) setDraftError("Could not read projects saved in this browser.");
             return [];
@@ -839,16 +857,37 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
             if (active) setError(caught instanceof Error ? caught.message : "Could not load saved projects.");
             return [] as DesignSummary[];
           }),
+          apiFetch("/api/projects").then(parseResponse).catch(() => {
+            if (active) setDraftError("Could not load projects from the database.");
+            return { storage_enabled: false, projects: [] };
+          }) as Promise<{ storage_enabled: boolean; projects: StoredProject[] }>,
         ]);
         if (!active) return;
-        setDrafts(localDrafts);
+        setProjectStorageEnabled(projectList.storage_enabled);
+        setStoredProjects(projectList.projects);
+        const browserDrafts = new Map(localDrafts.map((draft) => [draft.id, draft]));
+        for (const project of projectList.projects) {
+          const saved = project.draft_progress;
+          if (typeof saved.step !== "number") continue;
+          const local = browserDrafts.get(project.project_id);
+          if (local && Date.parse(local.updatedAt) > Date.parse(project.updated_at)) continue;
+          const photos = local?.intake.photos.filter((photo) => saved.photos?.some((entry) => entry.name === photo.name)) ?? [];
+          browserDrafts.set(project.project_id, {
+            ownerId: payload.user.id, id: project.project_id, name: project.project_name,
+            updatedAt: project.updated_at, designId: local?.designId,
+            intake: { ...saved, photos } as ProjectDraft["intake"],
+          });
+        }
+        const mergedDrafts = [...browserDrafts.values()];
+        setDrafts(mergedDrafts);
         if (!routeId) return;
-        const draft = localDrafts.find((entry) => entry.id === routeId);
+        const draft = browserDrafts.get(routeId);
+        const storedProject = projectList.projects.find((project) => project.project_id === routeId);
         const saved = remoteDesigns.filter((entry) => entry.project_id === routeId)
           .sort((left, right) => Date.parse(right.generated_at) - Date.parse(left.generated_at))[0];
         const savedId = saved?.design_id ?? draft?.designId;
         if (draft) restoreIntake(draft.intake);
-        if (savedId || !draft) {
+        if (savedId || (!draft && !storedProject)) {
           const problem = await loadDesign(savedId ?? routeId);
           if (active && problem) setRouteError(problem);
         }
@@ -863,20 +902,25 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
   }, [routeId, router]);
 
   useEffect(() => {
-    if (authLoading || routeError || !activeDraftId || !homeowner) return;
+    if (authLoading || routeError || !activeDraftId || !homeowner || deletingProjectId === activeDraftId) return;
     const draft = {
       ownerId: homeowner.id, id: activeDraftId, name: design?.project_name ?? projectName,
       updatedAt: new Date().toISOString(), designId: design?.design_id, intake,
     };
-    void writeProjectDraft(draft)
+    const localSave = writeProjectDraft(draft);
+    const remoteSave = draftWrites.current.then(() => syncDraft(draft));
+    const save = Promise.all([localSave, remoteSave]).then(() => undefined);
+    draftWrites.current = Promise.allSettled([localSave, remoteSave]).then(() => undefined);
+    void save
       .then(() => {
         if (mounted.current) {
           setDraftError("");
-          setDrafts((current) => current.map((entry) => entry.id === draft.id ? draft : entry));
+          setDrafts((current) => [...current.filter((entry) => entry.id !== draft.id), draft]);
         }
       })
-      .catch(() => { if (mounted.current) setDraftError("Changes could not be saved in this browser."); });
-  }, [authLoading, routeError, activeDraftId, homeowner, design?.design_id, design?.project_name, projectName, intake]);
+      .catch(() => { if (mounted.current) setDraftError("Changes could not be synced. Check your connection and try again."); });
+  }, [authLoading, routeError, activeDraftId, homeowner, design?.design_id, design?.project_name,
+    projectName, intake, projectStorageEnabled, deletingProjectId]);
 
   useEffect(() => {
     if (!authLoading && !routeId && window.location.hash === "#new-project") highlightWorkspace();
@@ -926,7 +970,7 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
       setSavedDesigns([]);
       return [] as DesignSummary[];
     }
-    const response = await apiFetch(`/api/designs?user_id=${encodeURIComponent(user.id)}`);
+    const response = await apiFetch("/api/designs");
     const payload = await parseResponse(response);
     const designs: DesignSummary[] = payload.designs ?? [];
     setSavedDesigns(designs);
@@ -982,7 +1026,25 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
       updatedAt: new Date().toISOString(), intake: nextIntake,
     };
     await writeProjectDraft(draft);
-    if (mounted.current) router.push(`/design/${encodeURIComponent(draft.id)}`);
+    await syncDraft(draft);
+    if (mounted.current) router.push(`/project/${encodeURIComponent(draft.id)}`);
+  }
+
+  async function syncDraft(draft: ProjectDraft) {
+    if (!projectStorageEnabled) return;
+    const response = await apiFetch(`/api/projects/${encodeURIComponent(draft.id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        project_name: draft.name,
+        draft_progress: {
+          ...draft.intake,
+          // IndexedDB keeps the image bytes until object storage is available.
+          photos: draft.intake.photos.map(({ name, note }) => ({ name, note })),
+        },
+      }),
+    });
+    await parseResponse(response);
   }
 
   function restoreIntake(saved: ProjectDraft["intake"]) {
@@ -1258,9 +1320,11 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
     setError("");
     setWarning("");
     try {
+      await draftWrites.current;
       if (hasSavedDesign) {
         const response = await apiFetch(`/api/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" });
         await parseResponse(response);
+        setStoredProjects((current) => current.filter((project) => project.project_id !== projectId));
       }
       if (homeowner && drafts.some((draft) => draft.id === projectId)) {
         await deleteProjectDraft(homeowner.id, projectId);
@@ -1576,7 +1640,7 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
       <section className="ys-app-shell workspace-login-required">
         <h1>Sign in to open your projects</h1>
         <p>Your saved rooms and recommendations are available only inside your account.</p>
-        <Link className="ys-solid-button" href={`/login?next=${encodeURIComponent(routeId ? `/design/${routeId}` : "/workspace")}`}>Go to sign in</Link>
+        <Link className="ys-solid-button" href={`/login?next=${encodeURIComponent(routeId ? `/project/${encodeURIComponent(routeId)}` : "/workspace")}`}>Go to sign in</Link>
       </section>
     );
   }
@@ -1606,7 +1670,7 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
               <div key={savedProject.projectId} className={`ys-project-row ${savedProject.projectId === currentProjectId ? "active" : ""}`}>
                 <Link
                   className="ys-project-open"
-                  href={`/design/${encodeURIComponent(savedProject.routeId)}`}
+                  href={`/project/${encodeURIComponent(savedProject.routeId)}`}
                   aria-current={savedProject.routeId === routeId ? "page" : undefined}
                 >
                   <img src={savedProject.preview} alt="" onError={(event) => { event.currentTarget.src = "/product-placeholder.svg"; }} />

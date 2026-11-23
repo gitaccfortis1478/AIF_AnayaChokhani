@@ -5,6 +5,7 @@ navigation item is implemented as its own route:
 
 - `/` - Overview
 - `/workspace` - full frontend-to-backend design journey
+- `/project/{id}` - project wizard and saved design
 - `/planner` - interactive room and budget planner
 - `/catalogue` - sample furniture catalogue
 - `/image-smoke` - product image mapping smoke page
@@ -81,8 +82,22 @@ profiles when they next sign in. Preserve that file when deploying, and expect
 existing sessions to require a fresh sign-in. Local development can leave both
 Supabase variables empty to use the file-backed account store.
 
-This migration covers accounts and sessions. Project and draft storage use
-their existing storage paths.
+Apply [the projects and designs migration](supabase/migrations/20261122000001_projects_and_designs.sql)
+after the accounts migration. With the same Supabase configuration, FastAPI
+lists and saves project drafts at `/api/projects` and reads and writes generated
+designs through the Supabase Data API. The browser sends the session cookie
+and FastAPI resolves the owner before querying.
+
+The backend uses HTTP through `httpx`. For example, listing projects sends
+`GET /rest/v1/yourspace_projects` with an owner filter. Reading a design joins
+its project with PostgREST's embedded relationship syntax and filters on the
+project's owner. Writes send JSON, and Postgres enforces the migration's
+constraints.
+
+Photos stay in the browser for drafts and on the backend filesystem for
+generated designs. Only draft fields and design metadata sync to Supabase.
+Existing file-backed designs remain readable while their files are available.
+Saving an existing design writes its metadata to Supabase.
 
 ```bash
 uv sync

@@ -35,6 +35,7 @@ from formaos.definitions import ROOM_CATEGORIES as DEMO_ROOM_CATEGORIES
 from formaos.definitions import ROOM_DEFAULT_NEEDS, ROOM_DESIGN_GUIDANCE
 from formaos.api.marble import create_marble_router
 from formaos.api.supabase_accounts import SupabaseAuthStore
+from formaos.api.supabase_projects import SupabaseProjectStore, restore_images
 from formaos.agents.graph_loop import AgentLoopResult, run_agent_loop
 from formaos.agents.critic import critique_design
 from formaos.agents.grounder import ground_design
@@ -358,6 +359,7 @@ auth_store: FileAuthStore | SupabaseAuthStore = (
     SupabaseAuthStore(supabase_url, supabase_secret, AUTH_SESSION_DAYS, file_auth_store.previous_google_profile)
     if supabase_url else file_auth_store
 )
+project_store = SupabaseProjectStore(supabase_url, supabase_secret) if supabase_url else None
 
 
 STYLE_PROFILES: dict[str, str] = {
@@ -549,6 +551,11 @@ class DesignListResponse(BaseModel):
     count: int
 
 
+class ProjectDraftRequest(BaseModel):
+    project_name: str = Field(min_length=1, max_length=120, pattern=r"\S")
+    draft_progress: dict[str, Any]
+
+
 class CatalogueSearchResponse(BaseModel):
     results: list[dict[str, Any]]
     count: int
@@ -598,7 +605,7 @@ def application_auth_required() -> bool:
 
 
 def request_user(request: Request) -> dict[str, str] | None:
-    return authenticated_user(request, required=application_auth_required())
+    return authenticated_user(request, required=project_store is not None or application_auth_required())
 
 
 def set_auth_cookie(response: Response, token: str) -> None:
@@ -613,11 +620,6 @@ def set_auth_cookie(response: Response, token: str) -> None:
         samesite=same_site,
         path="/",
     )
-
-
-def assert_design_owner(design: dict[str, Any], user: dict[str, str] | None) -> None:
-    if user and design.get("user_id") != user["id"]:
-        raise typed_error(404, "not_found", "design not found")
 
 
 def assert_session_owner(session_id: str, user: dict[str, str] | None) -> None:
@@ -668,6 +670,7 @@ def summarize_design(design: dict[str, Any]) -> DesignSummary:
         ),
         None,
     )
+
     concept_image = design.get("concept_image") or {}
     return DesignSummary(
         design_id=str(design["design_id"]),
@@ -684,6 +687,39 @@ def summarize_design(design: dict[str, Any]) -> DesignSummary:
         preview_image_data_url=concept_image.get("image_data_url"),
         preview_image_path=first_image_path,
     )
+
+
+def stored_designs(owner_id: str | None, project_id: str | None = None) -> list[dict[str, Any]]:
+    local = {
+        str(design["design_id"]): design for design in design_store.values()
+        if (owner_id is None or design.get("user_id") == owner_id)
+        and (project_id is None or (design.get("project_id") or design.get("session_id")) == project_id)
+    }
+    if project_store is not None and owner_id is not None:
+        for design in project_store.list_designs(owner_id, project_id):
+            design_id = design["design_id"]
+            local[design_id] = restore_images(design, local.get(design_id))
+    return list(local.values())
+
+
+def get_owned_design(design_id: str, request: Request) -> dict[str, Any]:
+    user = request_user(request)
+    local = design_store.get(design_id)
+    if local and user and local.get("user_id") != user["id"]:
+        local = None
+    if project_store is not None and user:
+        remote = project_store.get_design(design_id, user["id"])
+        if remote:
+            return restore_images(remote, local)
+    if local is None:
+        raise typed_error(404, "not_found", "design not found")
+    return deepcopy(local)
+
+
+def save_design(design_id: str, design: dict[str, Any]) -> None:
+    if project_store is not None:
+        project_store.save_design(design, summarize_design(design).model_dump())
+    design_store.save(design_id, design)
 
 
 def clean_prompt_part(value: str) -> str:
@@ -819,11 +855,7 @@ def project_product_index(design: dict[str, Any]) -> dict[str, dict[str, Any]]:
     project_id = str(design.get("project_id") or design.get("session_id"))
     owner_id = design.get("user_id")
     index: dict[str, dict[str, Any]] = {}
-    for candidate in design_store.values():
-        if str(candidate.get("project_id") or candidate.get("session_id")) != project_id:
-            continue
-        if candidate.get("user_id") != owner_id:
-            continue
+    for candidate in stored_designs(owner_id, project_id):
         for grounded_slot in candidate.get("grounder_output", {}).get("grounded_slots", []):
             slot = grounded_slot.get("slot", {})
             for item in [grounded_slot.get("selected_item"), *grounded_slot.get("alternatives", [])]:
@@ -862,12 +894,7 @@ def project_concept_history(design: dict[str, Any]) -> tuple[list[dict[str, Any]
     project_id = str(design.get("project_id") or design.get("session_id"))
     owner_id = design.get("user_id")
     project_designs = sorted(
-        (
-            candidate
-            for candidate in design_store.values()
-            if str(candidate.get("project_id") or candidate.get("session_id")) == project_id
-            and candidate.get("user_id") == owner_id
-        ),
+        stored_designs(owner_id, project_id),
         key=lambda candidate: str(candidate.get("generated_at") or ""),
     )
     merged: list[dict[str, Any]] = []
@@ -1740,7 +1767,7 @@ def run_design_for_session(session_id: str, max_retries: int, design_id: str | N
 
     resolved_design_id = design_id or f"design-{uuid4().hex[:12]}"
     payload = serializable_design(resolved_design_id, session_id, state.brief, result)
-    design_store.save(resolved_design_id, payload)
+    save_design(resolved_design_id, payload)
     state.attempt_log = payload["attempt_log"]
 
     # rich.print("*********** DEBUG RESULT ***********")
@@ -1870,22 +1897,17 @@ def create_session(http_request: Request, request: SessionRequest | None = None)
         brief = create_room_brief(**parsed)
     else:
         brief = create_room_brief()
-    state = state_store.create(session_id, brief)
     signed_in_user = request_user(http_request)
+    project_id = (request.project_id if request else None) or session_id
+    project_name = (request.project_name if request else None) or brief.room_type.replace("_", " ").title()
+    if project_store is not None and signed_in_user:
+        project_store.ensure_project(project_id, signed_in_user["id"], project_name)
+    state = state_store.create(session_id, brief)
     if signed_in_user:
         session_users[session_id] = signed_in_user["id"]
     elif request and request.user_id:
         session_users[session_id] = request.user_id
-    if request and request.project_id:
-        session_projects[session_id] = {
-            "project_id": request.project_id,
-            "project_name": request.project_name or brief.room_type.replace("_", " ").title(),
-        }
-    else:
-        session_projects[session_id] = {
-            "project_id": session_id,
-            "project_name": request.project_name if request and request.project_name else brief.room_type.replace("_", " ").title(),
-        }
+    session_projects[session_id] = {"project_id": project_id, "project_name": project_name}
     if request and request.message:
         state = state_store.append_message(session_id, "user", request.message)
     return SessionResponse(session_id=session_id, state=dict(to_graph_state(state)))
@@ -1917,7 +1939,7 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
     state_store.append_message(payload.session_id, "assistant", f"Design {design['design_id']} completed.")
     print("Debug: 5")
     design["chat_messages"] = list(state_store.get(payload.session_id).messages)
-    design_store.save(str(design["design_id"]), design)
+    save_design(str(design["design_id"]), design)
     print("************")
     return ChatResponse(state="passed", design=design)
 
@@ -1928,13 +1950,9 @@ def list_designs(
     user_id: str | None = Query(default=None, min_length=1, max_length=120),
     project_id: str | None = Query(default=None, min_length=1, max_length=120),
 ) -> DesignListResponse:
-    designs = design_store.values()
     signed_in_user = request_user(request)
     owner_id = signed_in_user["id"] if signed_in_user else user_id
-    if owner_id:
-        designs = [design for design in designs if design.get("user_id") == owner_id]
-    if project_id:
-        designs = [design for design in designs if (design.get("project_id") or design.get("session_id")) == project_id]
+    designs = stored_designs(owner_id, project_id)
     summaries = sorted(
         (summarize_design(design) for design in designs),
         key=lambda summary: summary.generated_at,
@@ -1943,12 +1961,31 @@ def list_designs(
     return DesignListResponse(designs=summaries, count=len(summaries))
 
 
+@app.get("/api/projects")
+def list_projects(request: Request) -> dict[str, Any]:
+    user = authenticated_user(request)
+    return {
+        "storage_enabled": project_store is not None,
+        "projects": project_store.list_projects(user["id"]) if project_store is not None else [],
+    }
+
+
+@app.put("/api/projects/{project_id}")
+def save_project_draft(project_id: str, payload: ProjectDraftRequest, request: Request) -> dict[str, bool]:
+    user = authenticated_user(request)
+    if project_store is not None:
+        project_store.save_draft(project_id, user["id"], payload.project_name.strip(), payload.draft_progress)
+    return {"storage_enabled": project_store is not None}
+
+
 @app.delete("/api/projects/{project_id}", response_model=DeleteProjectResponse)
 def delete_project(project_id: str, request: Request) -> DeleteProjectResponse:
     user = authenticated_user(request)
-    deleted_designs = design_store.delete_project(project_id, user["id"])
-    if not deleted_designs:
+    deleted_designs = stored_designs(user["id"], project_id)
+    deleted_project = project_store is not None and project_store.delete_project(project_id, user["id"])
+    if not deleted_designs and not deleted_project:
         raise typed_error(404, "not_found", "project not found")
+    design_store.delete_project(project_id, user["id"])
     for design in deleted_designs:
         session_id = str(design.get("session_id") or "")
         if not session_id:
@@ -1961,11 +1998,8 @@ def delete_project(project_id: str, request: Request) -> DeleteProjectResponse:
 
 @app.get("/api/design/{design_id}", response_model=DesignResponse)
 def get_design(design_id: str, request: Request) -> DesignResponse:
-    stored_design = design_store.get(design_id)
-    if stored_design is None:
-        raise typed_error(404, "not_found", "design not found")
+    stored_design = get_owned_design(design_id, request)
     design = deepcopy(stored_design)
-    assert_design_owner(design, request_user(request))
     grounded_slots = list(design.get("grounder_output", {}).get("grounded_slots", []))
     failed_slots = [slot for slot in grounded_slots if not slot.get("selected_item")]
     if failed_slots and design.get("room_brief"):
@@ -2008,7 +2042,7 @@ def get_design(design_id: str, request: Request) -> DesignResponse:
         design["source_images"] = recovered_sources[:2]
         changed = True
     if changed:
-        design_store.save(design_id, design)
+        save_design(design_id, design)
     return DesignResponse(design=design)
 
 
@@ -2017,19 +2051,12 @@ async def create_concept_image(payload: ConceptImageRequest, request: Request) -
     print("Debug: create_concept_image called with payload:", payload)
     existing_design: dict[str, Any] | None = None
     if payload.design_id:
-        existing_design = design_store.get(payload.design_id)
-        rich.print("===== Existing Design =====")
-        rich.print(existing_design)
-        rich.print("===== Existing Design =====")
-        if existing_design:
-            assert_design_owner(existing_design, request_user(request))
-            existing_design = dict(existing_design)
-            project_history, recovered_sources = project_concept_history(existing_design)
-            if project_history:
-                existing_design["concept_history"] = project_history
-            if recovered_sources and not existing_design.get("source_images"):
-                existing_design["source_images"] = recovered_sources[:2]
-            design_store.save(str(existing_design["design_id"]), existing_design)
+        existing_design = get_owned_design(payload.design_id, request)
+        project_history, recovered_sources = project_concept_history(existing_design)
+        if project_history:
+            existing_design["concept_history"] = project_history
+        if recovered_sources and not existing_design.get("source_images"):
+            existing_design["source_images"] = recovered_sources[:2]
 
     if existing_design:
         if existing_design.get("critic_verdict", {}).get("fit", {}).get("status") == "fail":
@@ -2043,7 +2070,7 @@ async def create_concept_image(payload: ConceptImageRequest, request: Request) -
     uploaded_sources = [image for image in payload.photo_data_urls if image]
     if existing_design and uploaded_sources:
         existing_design["source_images"] = uploaded_sources[:2]
-        design_store.save(str(existing_design["design_id"]), existing_design)
+        save_design(str(existing_design["design_id"]), existing_design)
     saved_sources = list((existing_design or {}).get("source_images") or [])
     source_images = uploaded_sources[:2] or saved_sources[:2]
     history = list((existing_design or {}).get("concept_history") or [])
@@ -2120,14 +2147,14 @@ async def create_concept_image(payload: ConceptImageRequest, request: Request) -
         }
         history.append(revision_entry)
         if payload.design_id:
-            design = design_store.get(payload.design_id)
+            design = get_owned_design(payload.design_id, request)
             if design:
                 if uploaded_sources:
                     design["source_images"] = uploaded_sources[:2]
                 design["concept_image"] = revision_entry
                 design["concept_history"] = history
                 design["last_revision_request"] = ""
-                design_store.save(payload.design_id, design)
+                save_design(payload.design_id, design)
         return ConceptImageResponse(
             mode="generated",
             image_prompt=prompt,
@@ -2144,7 +2171,7 @@ async def create_concept_image(payload: ConceptImageRequest, request: Request) -
         )
     history = list((existing_design or {}).get("concept_history") or concept_history_with_current(existing_design))
     if payload.design_id:
-        design = design_store.get(payload.design_id)
+        design = get_owned_design(payload.design_id, request)
         if design:
             if uploaded_sources:
                 design["source_images"] = uploaded_sources[:2]
@@ -2158,7 +2185,7 @@ async def create_concept_image(payload: ConceptImageRequest, request: Request) -
                 }
             else:
                 design["pending_concept_prompt"] = prompt
-            design_store.save(payload.design_id, design)
+            save_design(payload.design_id, design)
     return ConceptImageResponse(
         mode="prompt_only",
         image_prompt=prompt,
@@ -2177,12 +2204,11 @@ async def create_concept_image(payload: ConceptImageRequest, request: Request) -
 
 @app.post("/api/design/{design_id}/revise", response_model=DesignResponse)
 def revise_design(design_id: str, payload: ReviseRequest, request: Request) -> DesignResponse:
-    design = design_store.get(design_id)
-    if design is None:
-        raise typed_error(404, "not_found", "design not found")
-    assert_design_owner(design, request_user(request))
-    design = deepcopy(design)
+    design = get_owned_design(design_id, request)
     session_id = payload.session_id or str(design["session_id"])
+    existing_owner = session_users.get(session_id)
+    if existing_owner and existing_owner != design.get("user_id"):
+        raise typed_error(404, "not_found", "session not found")
     if state_store.get(session_id) is None:
         room_brief = design.get("room_brief")
         if not room_brief:
@@ -2247,16 +2273,13 @@ def revise_design(design_id: str, payload: ReviseRequest, request: Request) -> D
     design["last_revision_request"] = payload.message
     design["chat_messages"] = list(state_store.get(session_id).messages)
     design["generated_at"] = datetime.now(UTC).isoformat()
-    design_store.save(design_id, design)
+    save_design(design_id, design)
     return DesignResponse(design=design)
 
 
 @app.post("/api/design/{design_id}/select-item", response_model=DesignResponse)
 def select_design_item(design_id: str, payload: SelectItemRequest, request: Request) -> DesignResponse:
-    design = design_store.get(design_id)
-    if design is None:
-        raise typed_error(404, "not_found", "design not found")
-    assert_design_owner(design, request_user(request))
+    design = get_owned_design(design_id, request)
     grounded_slots = design.get("grounder_output", {}).get("grounded_slots", [])
     grounded_slot = next((slot for slot in grounded_slots if slot.get("slot", {}).get("slot_id") == payload.slot_id), None)
     if grounded_slot is None:
@@ -2278,7 +2301,7 @@ def select_design_item(design_id: str, payload: SelectItemRequest, request: Requ
     ])
     design["chat_messages"] = chat_messages
     design["generated_at"] = datetime.now(UTC).isoformat()
-    design_store.save(design_id, design)
+    save_design(design_id, design)
     return DesignResponse(design=design)
 
 
@@ -2314,10 +2337,7 @@ def export_design(
     request: Request,
     revision_id: str | None = Query(default=None, min_length=1, max_length=160),
 ) -> ExportResponse:
-    design = design_store.get(design_id)
-    if design is None:
-        raise typed_error(404, "not_found", "design not found")
-    assert_design_owner(design, request_user(request))
+    design = get_owned_design(design_id, request)
     history, recovered_sources = project_concept_history(design)
     selected_revision = next((revision for revision in history if revision.get("revision_id") == revision_id), None)
     if revision_id and selected_revision is None:
@@ -2382,10 +2402,7 @@ def export_design_image(
     request: Request,
     revision_id: str = Query(min_length=1, max_length=160),
 ) -> Response:
-    design = design_store.get(design_id)
-    if design is None:
-        raise typed_error(404, "not_found", "design not found")
-    assert_design_owner(design, request_user(request))
+    design = get_owned_design(design_id, request)
     history, _ = project_concept_history(design)
     selected_revision = next((revision for revision in history if revision.get("revision_id") == revision_id), None)
     if selected_revision is None:
@@ -2408,15 +2425,10 @@ def export_design_image(
 # Marble jobs live alongside their saved design and use the same account ownership checks.
 
 def marble_owned_design(design_id: str, request: Request) -> dict[str, Any]:
-    user = request_user(request)
-    design = design_store.get(design_id)
-    if design is None:
-        raise typed_error(404, "not_found", "design not found")
-    assert_design_owner(design, user)
-    return deepcopy(design)
+    return get_owned_design(design_id, request)
 
 
 app.include_router(create_marble_router(
     marble_owned_design,
-    lambda design_id, design: design_store.save(design_id, design),
+    save_design,
 ))

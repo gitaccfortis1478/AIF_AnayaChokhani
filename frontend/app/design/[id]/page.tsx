@@ -1,10 +1,6 @@
-import { WorkspaceClient } from "../../components/WorkspaceClient";
+import { redirect } from "next/navigation";
 
-export default async function DesignPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function LegacyProjectPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  return (
-    <main className="workspace-page">
-      <WorkspaceClient key={id} routeId={id} />
-    </main>
-  );
+  redirect(`/project/${encodeURIComponent(id)}`);
 }
