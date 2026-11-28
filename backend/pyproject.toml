@@ -18,7 +18,8 @@ dependencies = [
   "scipy",
   "requests",
   "pillow",
-  "rich"
+  "rich",
+  "pillow-heif>=1.8.1",
 ]
 
 [project.optional-dependencies]

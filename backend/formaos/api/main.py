@@ -18,6 +18,7 @@ from typing import Any
 from uuid import uuid4
 import io
 from PIL import Image
+from pillow_heif import register_heif_opener
 import rich
 
 import httpx
@@ -55,6 +56,7 @@ from formaos.room_state import (
 from formaos.vastu.schema import load_rule_set
 
 load_dotenv()
+register_heif_opener()
 
 APP_ROOT = Path(__file__).resolve().parents[3]
 CATALOGUE_PATH = Path("data/curated/abo_mvp_catalogue_with_images.csv")
@@ -1100,7 +1102,7 @@ def image_bytes_from_data_url(data_url: str) -> tuple[str, bytes]:
         raise typed_error(
             422,
             "invalid_image",
-            "uploaded room photo is not a valid image",
+            "The room photo could not be read. Export it as a JPEG, PNG, or WebP and upload it again.",
         ) from exc
 
     # Re-open after verify(), since verify() invalidates the image object.
@@ -1148,7 +1150,7 @@ def image_bytes_from_data_url(data_url: str) -> tuple[str, bytes]:
         raise typed_error(
             422,
             "unsupported_image",
-            "uploaded room photo could not be converted to JPEG",
+            "The room photo could not be converted. Export it as a JPEG, PNG, or WebP and upload it again.",
         ) from exc
 
     # Check the final JPEG size as well. The conversion can produce a
@@ -2048,7 +2050,6 @@ def get_design(design_id: str, request: Request) -> DesignResponse:
 
 @app.post("/api/concept-image", response_model=ConceptImageResponse)
 async def create_concept_image(payload: ConceptImageRequest, request: Request) -> ConceptImageResponse:
-    print("Debug: create_concept_image called with payload:", payload)
     existing_design: dict[str, Any] | None = None
     if payload.design_id:
         existing_design = get_owned_design(payload.design_id, request)

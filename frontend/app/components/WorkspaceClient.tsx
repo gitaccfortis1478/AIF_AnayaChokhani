@@ -21,17 +21,6 @@ const API_BASE = (process.env.NEXT_PUBLIC_MYSPACE_PUBLIC_BACKEND_URL ?? "").repl
 const MIN_BUDGET = 50000;
 const MAX_BUDGET = 500000;
 const BUDGET_STEP = 5000;
-const apiErrorStates = [
-  "invalid_brief",
-  "room_fit_failed",
-  "no_catalogue_results",
-  "retry_exhausted",
-  "graph_failure",
-  "missing_api_key",
-  "image_service_unavailable",
-  "image_generation_failed",
-  "general error",
-] as const;
 
 type Direction = (typeof directions)[number];
 type Unit = (typeof units)[number];
@@ -545,9 +534,12 @@ function DesignElementPreview({
 
 function errorMessage(payload: unknown, fallback: string) {
   if (!payload || typeof payload !== "object" || !("detail" in payload)) return fallback;
-  const detail = (payload as { detail?: { code?: string; message?: string } }).detail;
-  const knownCode = apiErrorStates.find((code) => code === detail?.code);
-  return knownCode ? `${knownCode}: ${detail?.message ?? fallback}` : fallback;
+  const { detail } = payload;
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (detail && typeof detail === "object" && "message" in detail && typeof detail.message === "string" && detail.message.trim()) {
+    return detail.message;
+  }
+  return fallback;
 }
 
 function errorDesign(payload: unknown) {
@@ -967,7 +959,7 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
 
   async function parseResponse(response: Response) {
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new ApiRequestError(errorMessage(payload, "API request failed"), errorDesign(payload));
+    if (!response.ok) throw new ApiRequestError(errorMessage(payload, `API request failed (HTTP ${response.status})`), errorDesign(payload));
     return payload;
   }
 
@@ -1263,7 +1255,6 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
           revision_text: revisionText,
           finish_schedule: revisionSchedule,
           vastu_enabled: vastuEnabled,
-          grounded_design: sourceDesign,
         }),
       });
       const payload = await parseResponse(response);
@@ -1740,7 +1731,7 @@ export function WorkspaceClient({ routeId }: { routeId?: string }) {
                 <h1>Let's get to know your space</h1>
                 <p>Upload photos and add room dimensions.</p>
                 <label className="ys-upload">
-                  <input type="file" accept="image/*" multiple disabled={openingDraft} onChange={(event) => {
+                  <input type="file" accept="image/*,.heic,.heif" multiple disabled={openingDraft} onChange={(event) => {
                     void handlePhotos(event.target.files);
                     event.target.value = "";
                   }} />

@@ -1,7 +1,11 @@
 import asyncio
+import base64
+import io
 
 from fastapi.testclient import TestClient
 from pathlib import Path
+from PIL import Image
+from pillow_heif import from_pillow
 import pytest
 
 from formaos.api import main as api_main
@@ -1111,6 +1115,20 @@ def test_generated_product_analysis_compares_render_with_candidate_images(monkey
         "data:image/jpeg;base64,YQ==",
         "data:image/jpeg;base64,Yg==",
     ]
+
+
+def test_room_photo_converter_accepts_heic() -> None:
+    source = io.BytesIO()
+    from_pillow(Image.new("RGB", (32, 24), "blue")).save(source)
+    encoded = base64.b64encode(source.getvalue()).decode("ascii")
+
+    mime_type, jpeg = api_main.image_bytes_from_data_url(f"data:image/heic;base64,{encoded}")
+
+    assert mime_type == "image/jpeg"
+    with Image.open(io.BytesIO(jpeg)) as result:
+        result.load()
+        assert result.format == "JPEG"
+        assert result.size == (32, 24)
 
 
 def test_concept_image_edits_uploaded_room_photo(monkeypatch) -> None:
